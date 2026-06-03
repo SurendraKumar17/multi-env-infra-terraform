@@ -1,0 +1,7 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+errored.tfstate
+.terraform.lock.hcl
+*.exe

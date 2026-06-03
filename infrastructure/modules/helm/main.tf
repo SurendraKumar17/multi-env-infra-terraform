@@ -1,0 +1,295 @@
+# ─────────────────────────────────────────
+# AWS Load Balancer Controller
+# ─────────────────────────────────────────
+resource "helm_release" "aws_load_balancer_controller" {
+  name       = "aws-load-balancer-controller"
+  repository = "https://aws.github.io/eks-charts"
+  chart      = "aws-load-balancer-controller"
+  namespace  = "kube-system"
+  version    = var.alb_controller_version
+
+  atomic          = true
+  cleanup_on_fail = true
+  wait            = true
+  timeout         = 300
+
+  set = [
+    {
+      name  = "clusterName"
+      value = var.cluster_name
+    },
+    {
+      name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+      value = var.alb_controller_role_arn
+    },
+    {
+      name  = "region"
+      value = var.region
+    },
+    {
+      name  = "vpcId"
+      value = var.vpc_id
+    },
+    {
+      name  = "replicaCount"
+      value = var.alb_controller_replica_count
+    }
+  ]
+}
+
+# ─────────────────────────────────────────
+# EBS CSI Driver
+# ─────────────────────────────────────────
+resource "helm_release" "ebs_csi_driver" {
+  name       = "aws-ebs-csi-driver"
+  repository = "https://kubernetes-sigs.github.io/aws-ebs-csi-driver"
+  chart      = "aws-ebs-csi-driver"
+  namespace  = "kube-system"
+  version    = var.ebs_csi_version
+
+  atomic          = true
+  cleanup_on_fail = true
+  wait            = true
+  timeout         = 300
+
+  set = [
+    {
+      name  = "controller.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+      value = var.ebs_csi_role_arn
+    }
+  ]
+}
+
+# ─────────────────────────────────────────
+# Metrics Server
+# ─────────────────────────────────────────
+resource "helm_release" "metrics_server" {
+  name       = "metrics-server"
+  repository = "https://kubernetes-sigs.github.io/metrics-server/"
+  chart      = "metrics-server"
+  namespace  = "kube-system"
+  version    = var.metrics_server_version
+
+  atomic          = true
+  cleanup_on_fail = true
+  wait            = true
+  timeout         = 180
+}
+
+# ─────────────────────────────────────────
+# Cluster Autoscaler
+# ─────────────────────────────────────────
+resource "helm_release" "cluster_autoscaler" {
+  name       = "cluster-autoscaler"
+  repository = "https://kubernetes.github.io/autoscaler"
+  chart      = "cluster-autoscaler"
+  namespace  = "kube-system"
+  version    = var.cluster_autoscaler_version
+
+  atomic          = true
+  cleanup_on_fail = true
+  wait            = true
+  timeout         = 300
+
+  set = [
+    {
+      name  = "autoDiscovery.clusterName"
+      value = var.cluster_name
+    },
+    {
+      name  = "awsRegion"
+      value = var.region
+    },
+    {
+      name  = "rbac.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+      value = var.cluster_autoscaler_role_arn
+    }
+  ]
+
+  depends_on = [helm_release.metrics_server]
+}
+
+# ─────────────────────────────────────────
+# ArgoCD
+# ─────────────────────────────────────────
+resource "helm_release" "argocd" {
+  name             = "argocd"
+  repository       = "https://argoproj.github.io/argo-helm"
+  chart            = "argo-cd"
+  namespace        = "argocd"
+  create_namespace = true
+  version          = var.argocd_version
+
+  atomic          = true
+  cleanup_on_fail = true
+  wait            = true
+  timeout         = 600
+
+  set = [
+    {
+      name  = "configs.params.server\\.insecure"
+      value = "true"
+    },
+    {
+      name  = "server.service.type"
+      value = "ClusterIP"
+    },
+    {
+      name  = "server.replicas"
+      value = var.argocd_server_replicas
+    },
+    {
+      name  = "repoServer.replicas"
+      value = var.argocd_repo_server_replicas
+    }
+  ]
+
+  depends_on = [helm_release.aws_load_balancer_controller]
+}
+
+# ─────────────────────────────────────────
+# ArgoCD Ingress
+# ─────────────────────────────────────────
+resource "kubernetes_ingress_v1" "argocd" {
+  metadata {
+    name      = "argocd-ingress"
+    namespace = "argocd"
+
+    annotations = {
+      "alb.ingress.kubernetes.io/scheme"           = "internet-facing"
+      "alb.ingress.kubernetes.io/target-type"      = "ip"
+      "alb.ingress.kubernetes.io/backend-protocol" = "HTTP"
+    }
+  }
+
+  spec {
+    ingress_class_name = "alb"
+
+    rule {
+      http {
+        path {
+          path      = "/"
+          path_type = "Prefix"
+
+          backend {
+            service {
+              name = "argocd-server"
+              port {
+                number = 80
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  depends_on = [helm_release.argocd]
+}
+
+# ─────────────────────────────────────────
+# External Secrets
+# ─────────────────────────────────────────
+resource "helm_release" "external_secrets" {
+  name             = "external-secrets"
+  repository       = "https://charts.external-secrets.io"
+  chart            = "external-secrets"
+  namespace        = "external-secrets"
+  create_namespace = true
+  version          = "0.9.11"
+
+  atomic          = true
+  cleanup_on_fail = true
+  wait            = true
+  timeout         = 300
+
+  set = [
+    {
+      name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+      value = var.external_secrets_role_arn
+    }
+  ]
+
+  depends_on = [helm_release.argocd]
+}
+
+# ─────────────────────────────────────────
+# Argo Rollouts
+# ─────────────────────────────────────────
+resource "helm_release" "argo_rollouts" {
+  name             = "argo-rollouts"
+  repository       = "https://argoproj.github.io/argo-helm"
+  chart            = "argo-rollouts"
+  namespace        = "argo-rollouts"
+  create_namespace = true
+  version          = "2.37.7"
+
+  atomic          = true
+  cleanup_on_fail = true
+  wait            = true
+  timeout         = 300
+
+  depends_on = [helm_release.argocd]
+}
+
+# ─────────────────────────────────────────────────────────────
+# PRE-DESTROY CLEANUP
+# ─────────────────────────────────────────────────────────────
+resource "null_resource" "pre_destroy_cleanup" {
+  triggers = {
+    cluster_name = var.cluster_name
+    region       = var.region
+  }
+
+  provisioner "local-exec" {
+    when       = destroy
+    on_failure = continue
+    command    = <<-EOT
+      echo "==> Updating kubeconfig"
+      aws eks update-kubeconfig \
+        --region ${self.triggers.region} \
+        --name ${self.triggers.cluster_name}
+
+      echo "==> Deleting all LoadBalancer services (releases EIPs + ALBs)"
+      kubectl delete svc -A \
+        --field-selector spec.type=LoadBalancer \
+        --ignore-not-found || true
+
+      echo "==> Deleting ALB ingresses (triggers ALB deletion)"
+      kubectl delete ingress -A --all --ignore-not-found || true
+
+      echo "==> Waiting 90s for AWS to release EIPs and delete ALBs"
+      sleep 90
+
+      echo "==> Deleting ArgoCD CRDs"
+      kubectl delete crd \
+        applications.argoproj.io \
+        applicationsets.argoproj.io \
+        appprojects.argoproj.io \
+        analysisruns.argoproj.io \
+        analysistemplates.argoproj.io \
+        clusteranalysistemplates.argoproj.io \
+        experiments.argoproj.io \
+        rollouts.argoproj.io \
+        --ignore-not-found || true
+
+      echo "==> Deleting namespaces"
+      for ns in argocd monitoring external-secrets argo-rollouts; do
+        kubectl delete namespace $ns --ignore-not-found || true
+      done
+
+      echo "==> Waiting 30s for namespaces to terminate"
+      sleep 30
+
+      echo "==> Pre-destroy cleanup complete ✅"
+    EOT
+  }
+
+  depends_on = [
+    helm_release.argocd,
+    helm_release.aws_load_balancer_controller,
+    helm_release.external_secrets,
+    helm_release.argo_rollouts,
+    kubernetes_ingress_v1.argocd,
+  ]
+}
