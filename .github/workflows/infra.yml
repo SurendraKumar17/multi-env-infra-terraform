@@ -138,7 +138,7 @@ jobs:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets[format('AWS_ROLE_{0}', upper(matrix.environment))] }}
+          role-to-assume: ${{ matrix.environment == 'dev' && secrets.AWS_ROLE_DEV || matrix.environment == 'staging' && secrets.AWS_ROLE_STAGING || secrets.AWS_ROLE_PROD }}
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Terraform Init
