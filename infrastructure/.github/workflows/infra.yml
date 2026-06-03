@@ -124,7 +124,7 @@ jobs:
       fail-fast: false   # Plan all envs even if one fails
       matrix:
         environment: [dev, staging, prod]
-    environment: ${{ matrix.environment }}-plan  # env-specific secrets
+    environment: ${{ matrix.environment }}
 
     steps:
       - name: Checkout
