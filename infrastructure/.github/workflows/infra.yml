@@ -1,0 +1,449 @@
+name: "Terraform Infrastructure Pipeline"
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "infrastructure/**"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "infrastructure/**"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment to apply"
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      action:
+        description: "Terraform action"
+        required: true
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: false  # Never cancel infra runs mid-flight
+
+permissions:
+  id-token: write       # OIDC token for AWS auth (no long-lived keys)
+  contents: read
+  pull-requests: write  # Post plan output as PR comment
+  issues: write
+
+env:
+  TF_VERSION: "1.7.0"
+  TF_INPUT: false
+  TF_IN_AUTOMATION: true
+
+# ─────────────────────────────────────────────────────────────
+# JOB 1 — Validate & Security Scan (runs on every PR/push)
+# ─────────────────────────────────────────────────────────────
+jobs:
+  validate:
+    name: "Validate & Security Scan"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Format Check
+        id: fmt
+        run: |
+          terraform fmt -check -recursive infrastructure/
+        continue-on-error: true
+
+      - name: Post Format Status to PR
+        if: github.event_name == 'pull_request' && steps.fmt.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '❌ **Terraform format check failed.** Run `terraform fmt -recursive infrastructure/` locally and push again.'
+            })
+
+      - name: Validate dev
+        run: |
+          cd infrastructure/envs/dev
+          terraform init -backend=false
+          terraform validate
+
+      - name: Validate staging
+        run: |
+          cd infrastructure/envs/staging
+          terraform init -backend=false
+          terraform validate
+
+      - name: Validate prod
+        run: |
+          cd infrastructure/envs/prod
+          terraform init -backend=false
+          terraform validate
+
+      - name: Run tfsec (security scan)
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: infrastructure/
+          soft_fail: false
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run checkov (compliance scan)
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: infrastructure/
+          framework: terraform
+          soft_fail: true  # Warn, don't block on checkov; adjust per policy
+          output_format: github_failed_only
+
+# ─────────────────────────────────────────────────────────────
+# JOB 2 — Terraform Plan (all envs, on PRs)
+# ─────────────────────────────────────────────────────────────
+  plan:
+    name: "Plan [${{ matrix.environment }}]"
+    needs: validate
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false   # Plan all envs even if one fails
+      matrix:
+        environment: [dev, staging, prod]
+    environment: ${{ matrix.environment }}-plan  # env-specific secrets
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets[format('AWS_ROLE_{0}', upper(matrix.environment))] }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Terraform Init
+        id: init
+        working-directory: infrastructure/envs/${{ matrix.environment }}
+        run: terraform init
+
+      - name: Terraform Plan
+        id: plan
+        working-directory: infrastructure/envs/${{ matrix.environment }}
+        run: |
+          terraform plan \
+            -var-file="terraform.tfvars" \
+            -out=tfplan-${{ matrix.environment }} \
+            -detailed-exitcode \
+            2>&1 | tee plan-output.txt
+          echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+        continue-on-error: true
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ matrix.environment }}-${{ github.sha }}
+          path: infrastructure/envs/${{ matrix.environment }}/tfplan-${{ matrix.environment }}
+          retention-days: 5
+
+      - name: Post plan to PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync('infrastructure/envs/${{ matrix.environment }}/plan-output.txt', 'utf8');
+            const truncated = planOutput.length > 65000 
+              ? planOutput.slice(0, 65000) + '\n\n... [truncated — see full logs in Actions]'
+              : planOutput;
+            const exitcode = '${{ steps.plan.outputs.exitcode }}';
+            const statusIcon = exitcode === '0' ? '✅' : exitcode === '2' ? '⚠️' : '❌';
+            const statusMsg = exitcode === '0' ? 'No changes' : exitcode === '2' ? 'Changes detected' : 'Plan failed';
+
+            const body = [
+              `### ${statusIcon} Terraform Plan — \`${{ matrix.environment }}\` — ${statusMsg}`,
+              '',
+              '<details><summary>Show Plan Output</summary>',
+              '',
+              '```hcl',
+              truncated,
+              '```',
+              '',
+              '</details>',
+              '',
+              `*Triggered by @${{ github.actor }} on \`${{ github.head_ref }}\`*`
+            ].join('\n');
+
+            // Find and update existing comment, or create new one
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c =>
+              c.user.login === 'github-actions[bot]' &&
+              c.body.includes(`Terraform Plan — \`${{ matrix.environment }}\``)
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body
+              });
+            }
+
+      - name: Fail if plan errored
+        if: steps.plan.outputs.exitcode == '1'
+        run: exit 1
+
+# ─────────────────────────────────────────────────────────────
+# JOB 3 — Apply DEV (auto, on merge to main)
+# ─────────────────────────────────────────────────────────────
+  apply-dev:
+    name: "Apply [dev]"
+    needs: validate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: dev  # Uses dev secrets; no approval required
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_DEV }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: infrastructure/envs/dev
+        run: terraform init
+
+      - name: Terraform Apply
+        working-directory: infrastructure/envs/dev
+        run: |
+          terraform apply \
+            -var-file="terraform.tfvars" \
+            -auto-approve \
+            2>&1 | tee apply-output.txt
+
+      - name: Notify Slack on failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "❌ *Terraform Apply FAILED* on `dev`\nTriggered by: ${{ github.actor }}\nCommit: ${{ github.sha }}\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run>"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+# ─────────────────────────────────────────────────────────────
+# JOB 4 — Apply STAGING (manual approval required)
+# ─────────────────────────────────────────────────────────────
+  apply-staging:
+    name: "Apply [staging]"
+    needs: apply-dev
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: staging  # ← GitHub Environment with required reviewers set
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_STAGING }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: infrastructure/envs/staging
+        run: terraform init
+
+      - name: Terraform Plan (pre-apply confirmation)
+        working-directory: infrastructure/envs/staging
+        run: |
+          terraform plan \
+            -var-file="terraform.tfvars" \
+            -out=tfplan-staging
+
+      - name: Terraform Apply
+        working-directory: infrastructure/envs/staging
+        run: |
+          terraform apply \
+            -auto-approve \
+            tfplan-staging \
+            2>&1 | tee apply-output.txt
+
+      - name: Notify Slack on failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "❌ *Terraform Apply FAILED* on `staging`\nTriggered by: ${{ github.actor }}\nCommit: ${{ github.sha }}\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run>"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+# ─────────────────────────────────────────────────────────────
+# JOB 5 — Apply PROD (2nd manual approval + audit trail)
+# ─────────────────────────────────────────────────────────────
+  apply-prod:
+    name: "Apply [prod]"
+    needs: apply-staging
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: prod  # ← GitHub Environment with REQUIRED REVIEWERS + wait timer
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_PROD }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: infrastructure/envs/prod
+        run: terraform init
+
+      - name: Terraform Plan (shown to approver before apply)
+        working-directory: infrastructure/envs/prod
+        run: |
+          terraform plan \
+            -var-file="terraform.tfvars" \
+            -out=tfplan-prod \
+            2>&1 | tee plan-output.txt
+
+      - name: Upload prod plan for audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: prod-plan-${{ github.sha }}-${{ github.run_id }}
+          path: infrastructure/envs/prod/plan-output.txt
+          retention-days: 90  # 90-day audit retention
+
+      - name: Terraform Apply
+        working-directory: infrastructure/envs/prod
+        run: |
+          terraform apply \
+            -auto-approve \
+            tfplan-prod \
+            2>&1 | tee apply-output.txt
+
+      - name: Notify Slack — success
+        if: success()
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "✅ *Terraform Apply SUCCESS* on `prod`\nApproved & applied by: ${{ github.actor }}\nCommit: ${{ github.sha }}\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run>"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Notify Slack — failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "🚨 *PROD Terraform Apply FAILED* — IMMEDIATE ATTENTION REQUIRED\nTriggered by: ${{ github.actor }}\nCommit: ${{ github.sha }}\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run>"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+# ─────────────────────────────────────────────────────────────
+# JOB 6 — Manual dispatch (plan/apply/destroy any env)
+# ─────────────────────────────────────────────────────────────
+  manual-dispatch:
+    name: "Manual [${{ github.event.inputs.environment }}] ${{ github.event.inputs.action }}"
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets[format('AWS_ROLE_{0}', upper(github.event.inputs.environment))] }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: infrastructure/envs/${{ github.event.inputs.environment }}
+        run: terraform init
+
+      - name: Terraform ${{ github.event.inputs.action }}
+        working-directory: infrastructure/envs/${{ github.event.inputs.environment }}
+        run: |
+          ACTION="${{ github.event.inputs.action }}"
+          ENV="${{ github.event.inputs.environment }}"
+
+          if [ "$ACTION" = "plan" ]; then
+            terraform plan -var-file="terraform.tfvars"
+
+          elif [ "$ACTION" = "apply" ]; then
+            terraform apply -var-file="terraform.tfvars" -auto-approve
+
+          elif [ "$ACTION" = "destroy" ]; then
+            # Destroy requires extra confirmation — prod is blocked entirely
+            if [ "$ENV" = "prod" ]; then
+              echo "🚫 Destroy on prod is disabled via pipeline. Use break-glass procedure."
+              exit 1
+            fi
+            terraform destroy -var-file="terraform.tfvars" -auto-approve
+          fi
