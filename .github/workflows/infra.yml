@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: "Target environment to apply"
+        description: "target environment to apply"
         required: true
         type: choice
         options:
