@@ -14,7 +14,7 @@ module "vpc" {
   region  = var.region
   cidr    = "10.0.0.0/16"
   azs     = ["us-east-1a", "us-east-1b"]
-  env     = "dev"
+  env = var.env
   project = "microservices"
   cluster_name = var.cluster_name
 }
@@ -25,7 +25,7 @@ module "vpc" {
 module "eks" {
   source       = "../../modules/eks"
   depends_on   = [module.vpc]
-  env          = "dev"
+  env = var.env
   cluster_name = var.cluster_name
   vpc_id       = module.vpc.vpc_id
   subnet_ids   = module.vpc.private_subnets
@@ -41,7 +41,7 @@ module "rds" {
   source     = "../../modules/rds"
   depends_on = [module.vpc]
 
-  env        = "dev"
+  env = var.env
   project    = "microservices"
   vpc_id     = module.vpc.vpc_id
   vpc_cidr   = module.vpc.vpc_cidr
@@ -69,7 +69,7 @@ module "rds_staging" {
 module "iam" {
   source            = "../../modules/iam"
   depends_on        = [module.eks]
-  env               = "dev"
+  env = var.env
   project           = "microservices"
   cluster_name      = module.eks.cluster_name
   oidc_provider_url = module.eks.oidc_provider_url
@@ -154,7 +154,7 @@ module "helm" {
 module "observability_s3" {
   source       = "../../modules/observability-s3"
   cluster_name = var.cluster_name
-  env          = "dev"
+  env = var.env
 }
 
 # ─────────────────────────────────────────
