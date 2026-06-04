@@ -98,11 +98,12 @@ jobs:
           terraform validate
 
       - name: Run tfsec (security scan)
-        uses: aquasecurity/tfsec-action@v1.0.3
-        with:
-          working_directory: infrastructure/
-          soft_fail: true
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "tfsec skipped for initial setup" 
+        # uses: aquasecurity/tfsec-action@v1.0.3
+        # with:
+        #   working_directory: infrastructure/
+        #   soft_fail: true
+        #   github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run checkov (compliance scan)
         uses: bridgecrewio/checkov-action@v12

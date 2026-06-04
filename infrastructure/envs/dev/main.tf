@@ -6,9 +6,9 @@ locals {
   bootstrap_path = "${local.repo_root}/../../../scripts/bootstrap.sh"
 }
 
-# ─────────────────────────────
+# ───────────────────────────
 # VPC
-# ─────────────────────────────
+# ───────────────────────────
 module "vpc" {
   source  = "../../modules/vpc"
   region  = var.region
