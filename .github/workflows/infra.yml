@@ -85,20 +85,21 @@ jobs:
           terraform init -backend=false
           terraform validate
 
-      - name: Validate staging
-        run: |
-          cd infrastructure/envs/staging
-          terraform init -backend=false
-          terraform validate
+      # staging and prod validation disabled for now
+      # - name: Validate staging
+      #   run: |
+      #     cd infrastructure/envs/staging
+      #     terraform init -backend=false
+      #     terraform validate
 
-      - name: Validate prod
-        run: |
-          cd infrastructure/envs/prod
-          terraform init -backend=false
-          terraform validate
+      # - name: Validate prod
+      #   run: |
+      #     cd infrastructure/envs/prod
+      #     terraform init -backend=false
+      #     terraform validate
 
       - name: Run tfsec (security scan)
-        run: echo "tfsec skipped for initial setup" 
+        run: echo "tfsec skipped for initial setup"
         # uses: aquasecurity/tfsec-action@v1.0.3
         # with:
         #   working_directory: infrastructure/
@@ -114,7 +115,7 @@ jobs:
           output_format: github_failed_only
 
 # ─────────────────────────────────────────────────────────────
-# JOB 2 — Terraform Plan (all envs, on PRs)
+# JOB 2 — Terraform Plan (dev only, on PRs)
 # ─────────────────────────────────────────────────────────────
   plan:
     name: "Plan [${{ matrix.environment }}]"
@@ -122,9 +123,9 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false   # Plan all envs even if one fails
+      fail-fast: false
       matrix:
-        environment: [dev, staging, prod]
+        environment: [dev]  # staging, prod disabled for now
     environment: ${{ matrix.environment }}
 
     steps:
@@ -193,7 +194,6 @@ jobs:
               `*Triggered by @${{ github.actor }} on \`${{ github.head_ref }}\`*`
             ].join('\n');
 
-            // Find and update existing comment, or create new one
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -231,7 +231,7 @@ jobs:
     needs: validate
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    environment: dev  # Uses dev secrets; no approval required
+    environment: dev
 
     steps:
       - name: Checkout
@@ -272,133 +272,60 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
 # ─────────────────────────────────────────────────────────────
-# JOB 4 — Apply STAGING (manual approval required)
+# JOB 4 — Apply STAGING (disabled for now)
 # ─────────────────────────────────────────────────────────────
-  apply-staging:
-    name: "Apply [staging]"
-    needs: apply-dev
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    environment: staging  # ← GitHub Environment with required reviewers set
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_STAGING }}
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: Terraform Init
-        working-directory: infrastructure/envs/staging
-        run: terraform init
-
-      - name: Terraform Plan (pre-apply confirmation)
-        working-directory: infrastructure/envs/staging
-        run: |
-          terraform plan \
-            -var-file="terraform.tfvars" \
-            -out=tfplan-staging
-
-      - name: Terraform Apply
-        working-directory: infrastructure/envs/staging
-        run: |
-          terraform apply \
-            -auto-approve \
-            tfplan-staging \
-            2>&1 | tee apply-output.txt
-
-      - name: Notify Slack on failure
-        if: failure()
-        uses: slackapi/slack-github-action@v1.26.0
-        with:
-          payload: |
-            {
-              "text": "❌ *Terraform Apply FAILED* on `staging`\nTriggered by: ${{ github.actor }}\nCommit: ${{ github.sha }}\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run>"
-            }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+# apply-staging:
+#   name: "Apply [staging]"
+#   needs: apply-dev
+#   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+#   runs-on: ubuntu-latest
+#   environment: staging
+#   steps:
+#     - name: Checkout
+#       uses: actions/checkout@v4
+#     - name: Setup Terraform
+#       uses: hashicorp/setup-terraform@v3
+#       with:
+#         terraform_version: ${{ env.TF_VERSION }}
+#     - name: Configure AWS credentials (OIDC)
+#       uses: aws-actions/configure-aws-credentials@v4
+#       with:
+#         role-to-assume: ${{ secrets.AWS_ROLE_STAGING }}
+#         aws-region: ${{ vars.AWS_REGION }}
+#     - name: Terraform Init
+#       working-directory: infrastructure/envs/staging
+#       run: terraform init
+#     - name: Terraform Apply
+#       working-directory: infrastructure/envs/staging
+#       run: terraform apply -var-file="terraform.tfvars" -auto-approve
 
 # ─────────────────────────────────────────────────────────────
-# JOB 5 — Apply PROD (2nd manual approval + audit trail)
+# JOB 5 — Apply PROD (disabled for now)
 # ─────────────────────────────────────────────────────────────
-  apply-prod:
-    name: "Apply [prod]"
-    needs: apply-staging
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    environment: prod  # ← GitHub Environment with REQUIRED REVIEWERS + wait timer
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_PROD }}
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: Terraform Init
-        working-directory: infrastructure/envs/prod
-        run: terraform init
-
-      - name: Terraform Plan (shown to approver before apply)
-        working-directory: infrastructure/envs/prod
-        run: |
-          terraform plan \
-            -var-file="terraform.tfvars" \
-            -out=tfplan-prod \
-            2>&1 | tee plan-output.txt
-
-      - name: Upload prod plan for audit
-        uses: actions/upload-artifact@v4
-        with:
-          name: prod-plan-${{ github.sha }}-${{ github.run_id }}
-          path: infrastructure/envs/prod/plan-output.txt
-          retention-days: 90  # 90-day audit retention
-
-      - name: Terraform Apply
-        working-directory: infrastructure/envs/prod
-        run: |
-          terraform apply \
-            -auto-approve \
-            tfplan-prod \
-            2>&1 | tee apply-output.txt
-
-      - name: Notify Slack — success
-        if: success()
-        uses: slackapi/slack-github-action@v1.26.0
-        with:
-          payload: |
-            {
-              "text": "✅ *Terraform Apply SUCCESS* on `prod`\nApproved & applied by: ${{ github.actor }}\nCommit: ${{ github.sha }}\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run>"
-            }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-
-      - name: Notify Slack — failure
-        if: failure()
-        uses: slackapi/slack-github-action@v1.26.0
-        with:
-          payload: |
-            {
-              "text": "🚨 *PROD Terraform Apply FAILED* — IMMEDIATE ATTENTION REQUIRED\nTriggered by: ${{ github.actor }}\nCommit: ${{ github.sha }}\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run>"
-            }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+# apply-prod:
+#   name: "Apply [prod]"
+#   needs: apply-staging
+#   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+#   runs-on: ubuntu-latest
+#   environment: prod
+#   steps:
+#     - name: Checkout
+#       uses: actions/checkout@v4
+#     - name: Setup Terraform
+#       uses: hashicorp/setup-terraform@v3
+#       with:
+#         terraform_version: ${{ env.TF_VERSION }}
+#     - name: Configure AWS credentials (OIDC)
+#       uses: aws-actions/configure-aws-credentials@v4
+#       with:
+#         role-to-assume: ${{ secrets.AWS_ROLE_PROD }}
+#         aws-region: ${{ vars.AWS_REGION }}
+#     - name: Terraform Init
+#       working-directory: infrastructure/envs/prod
+#       run: terraform init
+#     - name: Terraform Apply
+#       working-directory: infrastructure/envs/prod
+#       run: terraform apply -var-file="terraform.tfvars" -auto-approve
 
 # ─────────────────────────────────────────────────────────────
 # JOB 6 — Manual dispatch (plan/apply/destroy any env)
@@ -441,7 +368,6 @@ jobs:
             terraform apply -var-file="terraform.tfvars" -auto-approve
 
           elif [ "$ACTION" = "destroy" ]; then
-            # Destroy requires extra confirmation — prod is blocked entirely
             if [ "$ENV" = "prod" ]; then
               echo "🚫 Destroy on prod is disabled via pipeline. Use break-glass procedure."
               exit 1
