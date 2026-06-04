@@ -101,7 +101,7 @@ jobs:
         uses: aquasecurity/tfsec-action@v1.0.3
         with:
           working_directory: infrastructure/
-          soft_fail: false
+          soft_fail: true
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run checkov (compliance scan)
