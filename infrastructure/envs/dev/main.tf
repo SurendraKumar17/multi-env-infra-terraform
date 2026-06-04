@@ -6,7 +6,7 @@ locals {
   bootstrap_path = "${local.repo_root}/../../../scripts/bootstrap.sh"
 }
 
-# ──────────────────────────────────────
+# ──────────────────────────────
 # VPC
 # ──────────────────────────────
 module "vpc" {
