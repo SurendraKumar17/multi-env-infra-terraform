@@ -4,9 +4,10 @@ locals {
     Project     = var.project
     ManagedBy   = "terraform"
   }
+
+  nat_gateway_count = var.single_nat_gateway ? 1 : length(var.azs)
 }
 
-# ── VPC ──
 resource "aws_vpc" "main" {
   cidr_block           = var.cidr
   enable_dns_hostnames = true
@@ -14,13 +15,11 @@ resource "aws_vpc" "main" {
   tags = merge(local.tags, { Name = "${var.env}-vpc" })
 }
 
-# ── Internet Gateway ──
 resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.main.id
   tags   = merge(local.tags, { Name = "${var.env}-igw" })
 }
 
-# ── Public Subnets ──
 resource "aws_subnet" "public" {
   count                   = length(var.azs)
   vpc_id                  = aws_vpc.main.id
@@ -29,13 +28,12 @@ resource "aws_subnet" "public" {
   map_public_ip_on_launch = true
 
   tags = merge(local.tags, {
-  Name                     = "${var.env}-public-${count.index}"
-  "kubernetes.io/role/elb" = "1"
-  "kubernetes.io/cluster/${var.cluster_name}" = "shared"  # ← fix
-})
+    Name                                        = "${var.env}-public-${count.index}"
+    "kubernetes.io/role/elb"                    = "1"
+    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
+  })
 }
 
-# ── Private Subnets ──
 resource "aws_subnet" "private" {
   count             = length(var.azs)
   vpc_id            = aws_vpc.main.id
@@ -43,28 +41,27 @@ resource "aws_subnet" "private" {
   availability_zone = var.azs[count.index]
 
   tags = merge(local.tags, {
-  Name                              = "${var.env}-private-${count.index}"
-  "kubernetes.io/role/internal-elb" = "1"
-  "kubernetes.io/cluster/${var.cluster_name}" = "shared"  # ← fix
-})
+    Name                                        = "${var.env}-private-${count.index}"
+    "kubernetes.io/role/internal-elb"           = "1"
+    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
+  })
 }
 
-# ── NAT Gateways (one per AZ for HA) ──
 resource "aws_eip" "nat" {
-  count      = length(var.azs)
+  count      = var.single_nat_gateway ? 1 : length(var.azs)
   domain     = "vpc"
   depends_on = [aws_internet_gateway.igw]
   tags       = merge(local.tags, { Name = "${var.env}-nat-eip-${count.index}" })
 }
 
 resource "aws_nat_gateway" "nat" {
-  count         = length(var.azs)
+  count         = var.single_nat_gateway ? 1 : length(var.azs)
   allocation_id = aws_eip.nat[count.index].id
   subnet_id     = aws_subnet.public[count.index].id
+  depends_on    = [aws_internet_gateway.igw]
   tags          = merge(local.tags, { Name = "${var.env}-nat-${count.index}" })
 }
 
-# ── Public Route Table ──
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.main.id
   route {
@@ -80,13 +77,12 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# ── Private Route Tables (per AZ) ──
 resource "aws_route_table" "private" {
   count  = length(var.azs)
   vpc_id = aws_vpc.main.id
   route {
     cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.nat[count.index].id
+    nat_gateway_id = aws_nat_gateway.nat[var.single_nat_gateway ? 0 : count.index].id
   }
   tags = merge(local.tags, { Name = "${var.env}-private-rt-${count.index}" })
 }
@@ -97,7 +93,6 @@ resource "aws_route_table_association" "private" {
   route_table_id = aws_route_table.private[count.index].id
 }
 
-# ── VPC Flow Logs ──
 resource "aws_cloudwatch_log_group" "vpc_logs" {
   name              = "/aws/vpc/${var.env}/flow-logs"
   retention_in_days = 30
@@ -136,4 +131,3 @@ resource "aws_flow_log" "vpc" {
   iam_role_arn         = aws_iam_role.flow_logs.arn
   tags                 = local.tags
 }
-

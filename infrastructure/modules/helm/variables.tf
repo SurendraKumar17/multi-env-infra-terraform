@@ -90,3 +90,9 @@ variable "external_secrets_role_arn" {
   description = "IAM role ARN for External Secrets Operator (created in modules/iam)"
   type        = string
 }
+
+
+variable "env" {
+  description = "Environment name (dev, staging, prod)"
+  type        = string
+}

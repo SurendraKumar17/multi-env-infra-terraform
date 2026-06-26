@@ -1,30 +1,39 @@
 variable "region" {
-  default = "us-east-1"
+  description = "AWS region"
+  default     = "us-east-1"
 }
 
 variable "cluster_name" {
-  default = "dev-eks-cluster"
+  description = "EKS cluster name"
+  default     = "dev-eks-cluster"
 }
 
 variable "azs" {
-  default = ["us-east-1a", "us-east-1b", "us-east-1c"]
-}
-
-variable "private_subnets" {
-  default = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
-}
-
-variable "public_subnets" {
-  default = ["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]
+  description = "Availability zones"
+  default     = ["us-east-1a", "us-east-1b", "us-east-1c"]
 }
 
 variable "env" {
-  default = "dev"
+  description = "Environment name"
+  default     = "dev"
 }
 
 variable "project" {
-  default = "microservices"
+  description = "Project name"
+  default     = "microservices"
 }
 
-variable "max_size"     { default = 6 }
-variable "desired_size" { default = 3 }
+variable "max_size" {
+  description = "Max number of nodes"
+  default     = 6
+}
+
+variable "desired_size" {
+  description = "Desired number of nodes"
+  default     = 3
+}
+
+variable "min_size" {
+  description = "Min number of nodes"
+  default     = 2
+}

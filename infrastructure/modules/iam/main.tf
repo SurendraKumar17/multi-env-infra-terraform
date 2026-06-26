@@ -44,12 +44,9 @@ resource "aws_iam_role_policy_attachment" "alb_controller" {
   policy_arn = aws_iam_policy.alb_controller.arn
 }
 
-# ── Inline policy for extra ALB permissions ──
-# Why: Managed policy may miss some permissions like
-# DescribeListenerAttributes needed by newer controller versions
 resource "aws_iam_role_policy" "alb_extra" {
   name = "${var.cluster_name}-alb-extra"
-  role = "${var.cluster_name}-node-role"
+  role = var.node_role_name
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -139,27 +136,29 @@ resource "aws_iam_role_policy_attachment" "ebs_csi" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
 }
 
-
-# ── Cluster Autoscaler IAM Role ────────────────────────────────
+# ────────────────────────────────────────────────
+# IRSA — Cluster Autoscaler
+# ────────────────────────────────────────────────
 resource "aws_iam_role" "cluster_autoscaler" {
   name = "${var.cluster_name}-cluster-autoscaler"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect    = "Allow"
+      Effect = "Allow"
       Principal = {
         Federated = var.oidc_provider_arn
       }
-      Action    = "sts:AssumeRoleWithWebIdentity"
+      Action = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         StringEquals = {
-          "${var.oidc_provider_url}:sub" = "system:serviceaccount:kube-system:cluster-autoscaler-aws-cluster-autoscaler"
-          "${var.oidc_provider_url}:aud" = "sts.amazonaws.com"
+          "${local.oidc_id}:sub" = "system:serviceaccount:kube-system:cluster-autoscaler-aws-cluster-autoscaler"
+          "${local.oidc_id}:aud" = "sts.amazonaws.com"
         }
       }
     }]
   })
+  tags = local.tags
 }
 
 resource "aws_iam_role_policy" "cluster_autoscaler" {
@@ -168,24 +167,22 @@ resource "aws_iam_role_policy" "cluster_autoscaler" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "autoscaling:DescribeAutoScalingGroups",
-          "autoscaling:DescribeAutoScalingInstances",
-          "autoscaling:DescribeLaunchConfigurations",
-          "autoscaling:DescribeScalingActivities",
-          "autoscaling:DescribeTags",
-          "autoscaling:SetDesiredCapacity",
-          "autoscaling:TerminateInstanceInAutoScalingGroup",
-          "ec2:DescribeLaunchTemplateVersions",
-          "ec2:DescribeInstanceTypes",
-          "eks:DescribeNodegroup"
-        ]
-        Resource = "*"
-      }
-    ]
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "autoscaling:DescribeAutoScalingGroups",
+        "autoscaling:DescribeAutoScalingInstances",
+        "autoscaling:DescribeLaunchConfigurations",
+        "autoscaling:DescribeScalingActivities",
+        "autoscaling:DescribeTags",
+        "autoscaling:SetDesiredCapacity",
+        "autoscaling:TerminateInstanceInAutoScalingGroup",
+        "ec2:DescribeLaunchTemplateVersions",
+        "ec2:DescribeInstanceTypes",
+        "eks:DescribeNodegroup"
+      ]
+      Resource = "*"
+    }]
   })
 }
 
@@ -231,20 +228,21 @@ resource "aws_iam_role_policy" "external_secrets" {
   })
 }
 
+# ────────────────────────────────────────────────
+# Node role policy attachments
+# ────────────────────────────────────────────────
 resource "aws_iam_role_policy_attachment" "node_alb" {
-  role       = var.node_role_name    # ← not aws_iam_role.nodes.name
+  role       = var.node_role_name
   policy_arn = aws_iam_policy.alb_controller.arn
 }
 
 resource "aws_iam_role_policy_attachment" "node_ebs" {
-  role       = var.node_role_name    # ← not aws_iam_role.nodes.name
+  role       = var.node_role_name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
 }
 
-
 # ────────────────────────────────────────────────
 # IRSA — Observability (Loki + Tempo + Thanos)
-# Trusts 3 service accounts in observability ns
 # ────────────────────────────────────────────────
 resource "aws_iam_role" "observability" {
   name = "${var.cluster_name}-observability"
@@ -262,7 +260,6 @@ resource "aws_iam_role" "observability" {
           "${local.oidc_id}:aud" = "sts.amazonaws.com"
         }
         StringLike = {
-          # Wildcard covers loki, tempo, prometheus service accounts
           "${local.oidc_id}:sub" = "system:serviceaccount:observability:*"
         }
       }

@@ -1,63 +1,57 @@
-# ─────────────────────────────────────
-# LOCALS
-# ─────────────────────────────────────
 locals {
-  repo_root      = replace(abspath(path.module), "\\", "/")
-  bootstrap_path = "${local.repo_root}/../../../scripts/bootstrap.sh"
+  tags = {
+    Environment = var.env
+    Project     = var.project
+    ManagedBy   = "terraform"
+    Cluster     = var.cluster_name
+  }
 }
 
-# ─────────────────────────
+# ─────────────────────────────────────────
+# DATA
+# ─────────────────────────────────────────
+data "aws_caller_identity" "current" {}
+
+# ─────────────────────────────────────────
 # VPC
-# ─────────────────────────
+# ────────────────────────────────────────
 module "vpc" {
-  source  = "../../modules/vpc"
-  region  = var.region
-  cidr    = "10.0.0.0/16"
-  azs     = ["us-east-1a", "us-east-1b"]
-  env     = "dev"
-  project = "microservices"
+  source       = "../../modules/vpc"
+  region       = var.region
+  cidr         = "10.0.0.0/16"
+  azs          = var.azs
+  env          = var.env
+  project      = var.project
   cluster_name = var.cluster_name
+  single_nat_gateway = true
 }
 
-# ──────────────────────────────────────
+# ─────────────────────────────────────────
 # EKS
-# ──────────────────────────────────────
+# ─────────────────────────────────────────
 module "eks" {
   source       = "../../modules/eks"
   depends_on   = [module.vpc]
-  env          = "dev"
+  env          = var.env
+  project      = var.project
   cluster_name = var.cluster_name
   vpc_id       = module.vpc.vpc_id
   subnet_ids   = module.vpc.private_subnets
   region       = var.region
   max_size     = var.max_size
   desired_size = var.desired_size
+  min_size     = var.min_size
 }
 
 # ─────────────────────────────────────────
-# RDS — Postgres + Secrets Manager
+# RDS
 # ─────────────────────────────────────────
 module "rds" {
   source     = "../../modules/rds"
   depends_on = [module.vpc]
 
-  env        = "dev"
-  project    = "microservices"
-  vpc_id     = module.vpc.vpc_id
-  vpc_cidr   = module.vpc.vpc_cidr
-  subnet_ids = module.vpc.private_subnets
-}
-
-# ─────────────────────────────────────────
-# RDS — Staging (shares dev VPC + subnets)
-# Namespace: booking-staging
-# ─────────────────────────────────────────
-module "rds_staging" {
-  source     = "../../modules/rds"
-  depends_on = [module.vpc]
-
-  env        = "staging"
-  project    = "microservices"
+  env        = var.env
+  project    = var.project
   vpc_id     = module.vpc.vpc_id
   vpc_cidr   = module.vpc.vpc_cidr
   subnet_ids = module.vpc.private_subnets
@@ -69,8 +63,8 @@ module "rds_staging" {
 module "iam" {
   source            = "../../modules/iam"
   depends_on        = [module.eks]
-  env               = "dev"
-  project           = "microservices"
+  env               = var.env
+  project           = var.project
   cluster_name      = module.eks.cluster_name
   oidc_provider_url = module.eks.oidc_provider_url
   oidc_provider_arn = module.eks.oidc_provider_arn
@@ -83,14 +77,14 @@ module "iam" {
 # ─────────────────────────────────────────
 resource "aws_eks_access_entry" "github_actions" {
   cluster_name  = module.eks.cluster_name
-  principal_arn = "arn:aws:iam::635457411372:role/github-actions-ecr-role"
+  principal_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/github-actions-ecr-role"
   type          = "STANDARD"
   depends_on    = [module.eks]
 }
 
 resource "aws_eks_access_policy_association" "github_actions" {
   cluster_name  = module.eks.cluster_name
-  principal_arn = "arn:aws:iam::635457411372:role/github-actions-ecr-role"
+  principal_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/github-actions-ecr-role"
   policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
   depends_on    = [module.eks]
 
@@ -100,39 +94,11 @@ resource "aws_eks_access_policy_association" "github_actions" {
 }
 
 # ─────────────────────────────────────────
-# BOOTSTRAP — AWS pre-flight
-# Runs after EKS + IAM, before Helm
-# ─────────────────────────────────────────
-data "aws_caller_identity" "current" {}
-
-resource "null_resource" "bootstrap" {
-  triggers = {
-    cluster_name   = module.eks.cluster_name
-    bootstrap_hash = filemd5(local.bootstrap_path)
-  }
-
-  provisioner "local-exec" {
-    command     = "bash '${local.bootstrap_path}'"
-    interpreter = ["bash", "-c"]
-
-    environment = {
-      CLUSTER_NAME = module.eks.cluster_name
-      REGION       = var.region
-      VPC_ID       = module.vpc.vpc_id
-      ACCOUNT_ID   = data.aws_caller_identity.current.account_id
-    }
-  }
-
-  depends_on = [module.eks, module.iam]
-}
-
-# ─────────────────────────────────────────
-# HELM — cluster addons + ArgoCD
-# Waits for bootstrap to complete
+# HELM
 # ─────────────────────────────────────────
 module "helm" {
   source     = "../../modules/helm"
-  depends_on = [null_resource.bootstrap]
+  depends_on = [module.eks, module.iam]
 
   cluster_name                = module.eks.cluster_name
   region                      = var.region
@@ -141,6 +107,7 @@ module "helm" {
   ebs_csi_role_arn            = module.iam.ebs_csi_role_arn
   cluster_autoscaler_role_arn = module.iam.cluster_autoscaler_role_arn
   external_secrets_role_arn   = module.iam.external_secrets_role_arn
+  env                         = var.env
 
   alb_controller_replica_count = 1
   argocd_server_replicas       = 1
@@ -149,38 +116,11 @@ module "helm" {
 
 # ─────────────────────────────────────────
 # S3 — Observability backends
-# Loki chunks + ruler, Tempo traces, Thanos
 # ─────────────────────────────────────────
 module "observability_s3" {
   source       = "../../modules/observability-s3"
   cluster_name = var.cluster_name
-  env          = "dev"
-}
-
-# ─────────────────────────────────────────
-# CLEANUP — delete ingresses before destroy
-# Prevents VPC deletion failure due to ALB
-# ─────────────────────────────────────────
-resource "null_resource" "cleanup_alb" {
-  triggers = {
-    cluster_name = module.eks.cluster_name
-    region       = var.region
-  }
-
-  provisioner "local-exec" {
-    when    = destroy
-    command = <<-EOT
-      aws eks update-kubeconfig --region ${self.triggers.region} --name ${self.triggers.cluster_name}
-      kubectl delete ingress argocd-ingress -n argocd --ignore-not-found
-      kubectl delete ingress -n booking-dev --ignore-not-found --all
-      kubectl delete ingress -n booking-prod --ignore-not-found --all
-      echo "Waiting for ALBs to be deleted..."
-      sleep 60
-    EOT
-    interpreter = ["bash", "-c"]
-  }
-
-  depends_on = [module.helm]
+  env          = var.env
 }
 
 # ─────────────────────────────────────────
@@ -192,13 +132,11 @@ output "region"                  { value = var.region }
 output "vpc_id"                  { value = module.vpc.vpc_id }
 output "alb_controller_role_arn" { value = module.iam.alb_controller_role_arn }
 output "argocd_role_arn"         { value = module.iam.argocd_role_arn }
-output "rds_staging_endpoint"    { value = module.rds_staging.db_host }
-output "rds_staging_secret_arn"  { value = module.rds_staging.secret_arn }
+output "observability_role_arn"  { value = module.iam.observability_role_arn }
+output "rds_endpoint"            { value = module.rds.db_host }
+output "rds_secret_arn"          { value = module.rds.secret_arn }
+
 output "argocd_url" {
   description = "ArgoCD ALB URL — available ~2 mins after apply"
   value       = "http://${module.helm.argocd_hostname}"
-}
-
-output "observability_role_arn" {
-  value = module.iam.observability_role_arn
 }

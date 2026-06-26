@@ -1,4 +1,32 @@
 # ─────────────────────────────────────────
+# NAMESPACES — explicit, independent resources
+# ─────────────────────────────────────────
+
+resource "kubernetes_namespace" "argocd" {
+  metadata {
+    name = "argocd"
+  }
+}
+
+resource "kubernetes_namespace" "external_secrets" {
+  metadata {
+    name = "external-secrets"
+  }
+}
+
+resource "kubernetes_namespace" "argo_rollouts" {
+  metadata {
+    name = "argo-rollouts"
+  }
+}
+
+resource "kubernetes_namespace" "monitoring" {
+  metadata {
+    name = "monitoring"
+  }
+}
+
+# ─────────────────────────────────────────
 # AWS Load Balancer Controller
 # ─────────────────────────────────────────
 resource "helm_release" "aws_load_balancer_controller" {
@@ -13,28 +41,26 @@ resource "helm_release" "aws_load_balancer_controller" {
   wait            = true
   timeout         = 300
 
-  set = [
-    {
-      name  = "clusterName"
-      value = var.cluster_name
-    },
-    {
-      name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
-      value = var.alb_controller_role_arn
-    },
-    {
-      name  = "region"
-      value = var.region
-    },
-    {
-      name  = "vpcId"
-      value = var.vpc_id
-    },
-    {
-      name  = "replicaCount"
-      value = var.alb_controller_replica_count
-    }
-  ]
+  set {
+    name  = "clusterName"
+    value = var.cluster_name
+  }
+  set {
+    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+    value = var.alb_controller_role_arn
+  }
+  set {
+    name  = "region"
+    value = var.region
+  }
+  set {
+    name  = "vpcId"
+    value = var.vpc_id
+  }
+  set {
+    name  = "replicaCount"
+    value = var.alb_controller_replica_count
+  }
 }
 
 # ─────────────────────────────────────────
@@ -52,12 +78,10 @@ resource "helm_release" "ebs_csi_driver" {
   wait            = true
   timeout         = 300
 
-  set = [
-    {
-      name  = "controller.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
-      value = var.ebs_csi_role_arn
-    }
-  ]
+  set {
+    name  = "controller.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+    value = var.ebs_csi_role_arn
+  }
 }
 
 # ─────────────────────────────────────────
@@ -91,20 +115,18 @@ resource "helm_release" "cluster_autoscaler" {
   wait            = true
   timeout         = 300
 
-  set = [
-    {
-      name  = "autoDiscovery.clusterName"
-      value = var.cluster_name
-    },
-    {
-      name  = "awsRegion"
-      value = var.region
-    },
-    {
-      name  = "rbac.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
-      value = var.cluster_autoscaler_role_arn
-    }
-  ]
+  set {
+    name  = "autoDiscovery.clusterName"
+    value = var.cluster_name
+  }
+  set {
+    name  = "awsRegion"
+    value = var.region
+  }
+  set {
+    name  = "rbac.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+    value = var.cluster_autoscaler_role_arn
+  }
 
   depends_on = [helm_release.metrics_server]
 }
@@ -113,38 +135,38 @@ resource "helm_release" "cluster_autoscaler" {
 # ArgoCD
 # ─────────────────────────────────────────
 resource "helm_release" "argocd" {
-  name             = "argocd"
-  repository       = "https://argoproj.github.io/argo-helm"
-  chart            = "argo-cd"
-  namespace        = "argocd"
-  create_namespace = true
-  version          = var.argocd_version
+  name       = "argocd"
+  repository = "https://argoproj.github.io/argo-helm"
+  chart      = "argo-cd"
+  namespace  = kubernetes_namespace.argocd.metadata[0].name
+  version    = var.argocd_version
 
   atomic          = true
   cleanup_on_fail = true
   wait            = true
   timeout         = 600
 
-  set = [
-    {
-      name  = "configs.params.server\\.insecure"
-      value = "true"
-    },
-    {
-      name  = "server.service.type"
-      value = "ClusterIP"
-    },
-    {
-      name  = "server.replicas"
-      value = var.argocd_server_replicas
-    },
-    {
-      name  = "repoServer.replicas"
-      value = var.argocd_repo_server_replicas
-    }
-  ]
+  set {
+    name  = "configs.params.server\\.insecure"
+    value = "true"
+  }
+  set {
+    name  = "server.service.type"
+    value = "ClusterIP"
+  }
+  set {
+    name  = "server.replicas"
+    value = var.argocd_server_replicas
+  }
+  set {
+    name  = "repoServer.replicas"
+    value = var.argocd_repo_server_replicas
+  }
 
-  depends_on = [helm_release.aws_load_balancer_controller]
+  depends_on = [
+    helm_release.aws_load_balancer_controller,
+    kubernetes_namespace.argocd,
+  ]
 }
 
 # ─────────────────────────────────────────
@@ -153,7 +175,7 @@ resource "helm_release" "argocd" {
 resource "kubernetes_ingress_v1" "argocd" {
   metadata {
     name      = "argocd-ingress"
-    namespace = "argocd"
+    namespace = kubernetes_namespace.argocd.metadata[0].name
 
     annotations = {
       "alb.ingress.kubernetes.io/scheme"           = "internet-facing"
@@ -191,105 +213,136 @@ resource "kubernetes_ingress_v1" "argocd" {
 # External Secrets
 # ─────────────────────────────────────────
 resource "helm_release" "external_secrets" {
-  name             = "external-secrets"
-  repository       = "https://charts.external-secrets.io"
-  chart            = "external-secrets"
-  namespace        = "external-secrets"
-  create_namespace = true
-  version          = "0.9.11"
+  name       = "external-secrets"
+  repository = "https://charts.external-secrets.io"
+  chart      = "external-secrets"
+  namespace  = kubernetes_namespace.external_secrets.metadata[0].name
+  version    = "0.9.11"
 
   atomic          = true
   cleanup_on_fail = true
   wait            = true
   timeout         = 300
 
-  set = [
-    {
-      name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
-      value = var.external_secrets_role_arn
-    }
-  ]
+  set {
+    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+    value = var.external_secrets_role_arn
+  }
 
-  depends_on = [helm_release.argocd]
+  depends_on = [
+    helm_release.argocd,
+    kubernetes_namespace.external_secrets,
+  ]
 }
 
 # ─────────────────────────────────────────
 # Argo Rollouts
 # ─────────────────────────────────────────
 resource "helm_release" "argo_rollouts" {
-  name             = "argo-rollouts"
-  repository       = "https://argoproj.github.io/argo-helm"
-  chart            = "argo-rollouts"
-  namespace        = "argo-rollouts"
-  create_namespace = true
-  version          = "2.37.7"
+  name       = "argo-rollouts"
+  repository = "https://argoproj.github.io/argo-helm"
+  chart      = "argo-rollouts"
+  namespace  = kubernetes_namespace.argo_rollouts.metadata[0].name
+  version    = "2.37.7"
 
   atomic          = true
   cleanup_on_fail = true
   wait            = true
   timeout         = 300
 
+  depends_on = [
+    helm_release.argocd,
+    kubernetes_namespace.argo_rollouts,
+  ]
+}
+
+# ─────────────────────────────────────────
+# Prometheus
+# ─────────────────────────────────────────
+resource "helm_release" "prometheus_stack" {
+  name       = "prometheus-stack"
+  repository = "https://prometheus-community.github.io/helm-charts"
+  chart      = "kube-prometheus-stack"
+  namespace  = kubernetes_namespace.monitoring.metadata[0].name
+  version    = "58.7.2"
+
+  atomic          = true
+  cleanup_on_fail = true
+  wait            = true
+  timeout         = 600
+
+  depends_on = [kubernetes_namespace.monitoring]
+}
+
+# ─────────────────────────────────────────
+# MongoDB
+# ─────────────────────────────────────────
+resource "helm_release" "mongodb" {
+  name       = "mongodb"
+  repository = "https://charts.bitnami.com/bitnami"
+  chart      = "mongodb"
+  namespace  = "app-dev"
+  version    = "15.6.18"
+
+  atomic          = true
+  cleanup_on_fail = true
+  wait            = true
+  timeout         = 300
+
+  set {
+    name  = "auth.enabled"
+    value = "true"
+  }
+  set {
+    name  = "auth.rootUser"
+    value = "root"
+  }
+  set {
+    name  = "auth.rootPassword"
+    value = "changeme"
+  }
+  set {
+    name  = "auth.databases[0]"
+    value = "notification_db"
+  }
+  set {
+    name  = "auth.usernames[0]"
+    value = "notificationuser"
+  }
+  set {
+    name  = "auth.passwords[0]"
+    value = "changeme"
+  }
+  set {
+    name  = "architecture"
+    value = "standalone"
+  }
+  set {
+    name  = "persistence.enabled"
+    value = "true"
+  }
+  set {
+    name  = "persistence.size"
+    value = "8Gi"
+  }
+
   depends_on = [helm_release.argocd]
 }
 
-# ─────────────────────────────────────────────────────────────
-# PRE-DESTROY CLEANUP
-# ─────────────────────────────────────────────────────────────
-resource "null_resource" "pre_destroy_cleanup" {
-  triggers = {
-    cluster_name = var.cluster_name
-    region       = var.region
-  }
+# ─────────────────────────────────────────
+# MongoDB Secret in AWS Secrets Manager
+# ─────────────────────────────────────────
+resource "aws_secretsmanager_secret" "mongodb" {
+  name                    = "${var.env}/microservices/mongodb"
+  recovery_window_in_days = 0
+}
 
-  provisioner "local-exec" {
-    when       = destroy
-    on_failure = continue
-    command    = <<-EOT
-      echo "==> Updating kubeconfig"
-      aws eks update-kubeconfig \
-        --region ${self.triggers.region} \
-        --name ${self.triggers.cluster_name}
+resource "aws_secretsmanager_secret_version" "mongodb" {
+  secret_id = aws_secretsmanager_secret.mongodb.id
+  secret_string = jsonencode({
+    MONGO_URI = "mongodb://notificationuser:changeme@mongodb.app-dev.svc.cluster.local:27017/notification_db"
+    DB_NAME   = "notification_db"
+  })
 
-      echo "==> Deleting all LoadBalancer services (releases EIPs + ALBs)"
-      kubectl delete svc -A \
-        --field-selector spec.type=LoadBalancer \
-        --ignore-not-found || true
-
-      echo "==> Deleting ALB ingresses (triggers ALB deletion)"
-      kubectl delete ingress -A --all --ignore-not-found || true
-
-      echo "==> Waiting 90s for AWS to release EIPs and delete ALBs"
-      sleep 90
-
-      echo "==> Deleting ArgoCD CRDs"
-      kubectl delete crd \
-        applications.argoproj.io \
-        applicationsets.argoproj.io \
-        appprojects.argoproj.io \
-        analysisruns.argoproj.io \
-        analysistemplates.argoproj.io \
-        clusteranalysistemplates.argoproj.io \
-        experiments.argoproj.io \
-        rollouts.argoproj.io \
-        --ignore-not-found || true
-
-      echo "==> Deleting namespaces"
-      for ns in argocd monitoring external-secrets argo-rollouts; do
-        kubectl delete namespace $ns --ignore-not-found || true
-      done
-
-      echo "==> Waiting 30s for namespaces to terminate"
-      sleep 30
-
-      echo "==> Pre-destroy cleanup complete ✅"
-    EOT
-  }
-
-  depends_on = [
-    helm_release.argocd,
-    helm_release.aws_load_balancer_controller,
-    helm_release.external_secrets,
-    helm_release.argo_rollouts,
-    kubernetes_ingress_v1.argocd,
-  ]
+  depends_on = [helm_release.mongodb]
 }
