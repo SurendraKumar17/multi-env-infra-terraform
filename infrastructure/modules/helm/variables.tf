@@ -96,3 +96,15 @@ variable "env" {
   description = "Environment name (dev, staging, prod)"
   type        = string
 }
+
+variable "kong_version" {
+  description = "Helm chart version for Kong"
+  type        = string
+  default     = "2.44.0"
+}
+
+variable "kong_replica_count" {
+  description = "Number of Kong proxy replicas"
+  type        = number
+  default     = 2
+}
