@@ -6,6 +6,9 @@ resource "kubernetes_namespace" "argocd" {
   metadata {
     name = "argocd"
   }
+  timeouts {
+    delete = "20m"
+  }
 }
 
 resource "kubernetes_namespace" "external_secrets" {

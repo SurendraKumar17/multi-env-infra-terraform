@@ -45,10 +45,44 @@ env:
   TF_INPUT: false
   TF_IN_AUTOMATION: true
 
-# ─────────────────────────────────────────────────────────────
-# JOB 1 — Validate & Security Scan (runs on every PR/push)
-# ─────────────────────────────────────────────────────────────
 jobs:
+  # ─────────────────────────────────────────────────────────────
+  # JOB 0 — Detect which env(s) changed
+  # A change under infrastructure/modules/** touches every env,
+  # so that path marks all three as changed too.
+  # ─────────────────────────────────────────────────────────────
+  detect-changes:
+    name: "Detect changed environments"
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    outputs:
+      dev: ${{ steps.filter.outputs.dev }}
+      staging: ${{ steps.filter.outputs.staging }}
+      prod: ${{ steps.filter.outputs.prod }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Path filter
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            shared: &shared
+              - 'infrastructure/modules/**'
+            dev:
+              - *shared
+              - 'infrastructure/envs/dev/**'
+            staging:
+              - *shared
+              - 'infrastructure/envs/staging/**'
+            prod:
+              - *shared
+              - 'infrastructure/envs/prod/**'
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 1 — Validate & Security Scan (runs on every PR/push)
+  # ─────────────────────────────────────────────────────────────
   validate:
     name: "Validate & Security Scan"
     runs-on: ubuntu-latest
@@ -85,26 +119,17 @@ jobs:
           terraform init -backend=false
           terraform validate
 
-      # staging and prod validation disabled for now
-      # - name: Validate staging
-      #   run: |
-      #     cd infrastructure/envs/staging
-      #     terraform init -backend=false
-      #     terraform validate
+      - name: Validate staging
+        run: |
+          cd infrastructure/envs/staging
+          terraform init -backend=false
+          terraform validate
 
-      # - name: Validate prod
-      #   run: |
-      #     cd infrastructure/envs/prod
-      #     terraform init -backend=false
-      #     terraform validate
-
-      - name: Run tfsec (security scan)
-        run: echo "tfsec skipped for initial setup"
-        # uses: aquasecurity/tfsec-action@v1.0.3
-        # with:
-        #   working_directory: infrastructure/
-        #   soft_fail: true
-        #   github_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Validate prod
+        run: |
+          cd infrastructure/envs/prod
+          terraform init -backend=false
+          terraform validate
 
       - name: Run checkov (compliance scan)
         uses: bridgecrewio/checkov-action@v12
@@ -114,18 +139,24 @@ jobs:
           soft_fail: true  # Warn, don't block on checkov; adjust per policy
           output_format: github_failed_only
 
-# ─────────────────────────────────────────────────────────────
-# JOB 2 — Terraform Plan (dev only, on PRs)
-# ─────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────
+  # JOB 2 — Terraform Plan (all changed envs, on PRs)
+  # ─────────────────────────────────────────────────────────────
   plan:
     name: "Plan [${{ matrix.environment }}]"
-    needs: validate
-    if: github.event_name == 'pull_request'
+    needs: [validate, detect-changes]
+    if: |
+      github.event_name == 'pull_request' &&
+      (
+        (matrix.environment == 'dev' && needs.detect-changes.outputs.dev == 'true') ||
+        (matrix.environment == 'staging' && needs.detect-changes.outputs.staging == 'true') ||
+        (matrix.environment == 'prod' && needs.detect-changes.outputs.prod == 'true')
+      )
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        environment: [dev]  # staging, prod disabled for now
+        environment: [dev, staging, prod]
     environment: ${{ matrix.environment }}
 
     steps:
@@ -173,7 +204,7 @@ jobs:
           script: |
             const fs = require('fs');
             const planOutput = fs.readFileSync('infrastructure/envs/${{ matrix.environment }}/plan-output.txt', 'utf8');
-            const truncated = planOutput.length > 65000 
+            const truncated = planOutput.length > 65000
               ? planOutput.slice(0, 65000) + '\n\n... [truncated — see full logs in Actions]'
               : planOutput;
             const exitcode = '${{ steps.plan.outputs.exitcode }}';
@@ -223,13 +254,15 @@ jobs:
         if: steps.plan.outputs.exitcode == '1'
         run: exit 1
 
-# ─────────────────────────────────────────────────────────────
-# JOB 3 — Apply DEV (auto, on merge to main)
-# ─────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────
+  # JOB 3 — Apply DEV (only if dev changed, on merge to main)
+  # Pauses for manual approval if the "dev" GitHub Environment
+  # has required reviewers configured in repo Settings.
+  # ─────────────────────────────────────────────────────────────
   apply-dev:
     name: "Apply [dev]"
-    needs: validate
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [validate, detect-changes]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect-changes.outputs.dev == 'true'
     runs-on: ubuntu-latest
     environment: dev
 
@@ -271,65 +304,116 @@ jobs:
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
-# ─────────────────────────────────────────────────────────────
-# JOB 4 — Apply STAGING (disabled for now)
-# ─────────────────────────────────────────────────────────────
-# apply-staging:
-#   name: "Apply [staging]"
-#   needs: apply-dev
-#   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-#   runs-on: ubuntu-latest
-#   environment: staging
-#   steps:
-#     - name: Checkout
-#       uses: actions/checkout@v4
-#     - name: Setup Terraform
-#       uses: hashicorp/setup-terraform@v3
-#       with:
-#         terraform_version: ${{ env.TF_VERSION }}
-#     - name: Configure AWS credentials (OIDC)
-#       uses: aws-actions/configure-aws-credentials@v4
-#       with:
-#         role-to-assume: ${{ secrets.AWS_ROLE_STAGING }}
-#         aws-region: ${{ vars.AWS_REGION }}
-#     - name: Terraform Init
-#       working-directory: infrastructure/envs/staging
-#       run: terraform init
-#     - name: Terraform Apply
-#       working-directory: infrastructure/envs/staging
-#       run: terraform apply -var-file="terraform.tfvars" -auto-approve
+  # ─────────────────────────────────────────────────────────────
+  # JOB 4 — Apply STAGING (only if staging changed, on merge to main)
+  # Pauses for manual approval if the "staging" Environment has
+  # required reviewers configured in repo Settings.
+  # ─────────────────────────────────────────────────────────────
+  apply-staging:
+    name: "Apply [staging]"
+    needs: [validate, detect-changes]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect-changes.outputs.staging == 'true'
+    runs-on: ubuntu-latest
+    environment: staging
 
-# ─────────────────────────────────────────────────────────────
-# JOB 5 — Apply PROD (disabled for now)
-# ─────────────────────────────────────────────────────────────
-# apply-prod:
-#   name: "Apply [prod]"
-#   needs: apply-staging
-#   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-#   runs-on: ubuntu-latest
-#   environment: prod
-#   steps:
-#     - name: Checkout
-#       uses: actions/checkout@v4
-#     - name: Setup Terraform
-#       uses: hashicorp/setup-terraform@v3
-#       with:
-#         terraform_version: ${{ env.TF_VERSION }}
-#     - name: Configure AWS credentials (OIDC)
-#       uses: aws-actions/configure-aws-credentials@v4
-#       with:
-#         role-to-assume: ${{ secrets.AWS_ROLE_PROD }}
-#         aws-region: ${{ vars.AWS_REGION }}
-#     - name: Terraform Init
-#       working-directory: infrastructure/envs/prod
-#       run: terraform init
-#     - name: Terraform Apply
-#       working-directory: infrastructure/envs/prod
-#       run: terraform apply -var-file="terraform.tfvars" -auto-approve
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-# ─────────────────────────────────────────────────────────────
-# JOB 6 — Manual dispatch (plan/apply/destroy any env)
-# ─────────────────────────────────────────────────────────────
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_STAGING }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: infrastructure/envs/staging
+        run: terraform init
+
+      - name: Terraform Apply
+        working-directory: infrastructure/envs/staging
+        run: |
+          terraform apply \
+            -var-file="terraform.tfvars" \
+            -auto-approve \
+            2>&1 | tee apply-output.txt
+
+      - name: Notify Slack on failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "❌ *Terraform Apply FAILED* on `staging`\nTriggered by: ${{ github.actor }}\nCommit: ${{ github.sha }}\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run>"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 5 — Apply PROD (only if prod changed, on merge to main)
+  # Pauses for manual approval if the "prod" Environment has
+  # required reviewers configured in repo Settings. Runs after
+  # staging succeeds, so promotion order is preserved when both
+  # changed in the same merge.
+  # ─────────────────────────────────────────────────────────────
+  apply-prod:
+    name: "Apply [prod]"
+    needs: [validate, detect-changes, apply-staging]
+    if: |
+      always() &&
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      needs.detect-changes.outputs.prod == 'true' &&
+      needs.validate.result == 'success' &&
+      (needs.apply-staging.result == 'success' || needs.apply-staging.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment: prod
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_PROD }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: infrastructure/envs/prod
+        run: terraform init
+
+      - name: Terraform Apply
+        working-directory: infrastructure/envs/prod
+        run: |
+          terraform apply \
+            -var-file="terraform.tfvars" \
+            -auto-approve \
+            2>&1 | tee apply-output.txt
+
+      - name: Notify Slack on failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "❌ *Terraform Apply FAILED* on `prod`\nTriggered by: ${{ github.actor }}\nCommit: ${{ github.sha }}\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run>"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 6 — Manual dispatch (plan/apply/destroy any env, break-glass)
+  # ─────────────────────────────────────────────────────────────
   manual-dispatch:
     name: "Manual [${{ github.event.inputs.environment }}] ${{ github.event.inputs.action }}"
     if: github.event_name == 'workflow_dispatch'
