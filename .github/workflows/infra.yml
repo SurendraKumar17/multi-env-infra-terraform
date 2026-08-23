@@ -301,6 +301,7 @@ jobs:
       - name: Terraform Apply
         working-directory: infrastructure/envs/dev
         run: |
+          set -o pipefail
           terraform apply \
             -var-file="terraform.tfvars" \
             -auto-approve \
@@ -351,6 +352,7 @@ jobs:
       - name: Terraform Apply
         working-directory: infrastructure/envs/staging
         run: |
+          set -o pipefail
           terraform apply \
             -var-file="terraform.tfvars" \
             -auto-approve \
@@ -408,6 +410,7 @@ jobs:
       - name: Terraform Apply
         working-directory: infrastructure/envs/prod
         run: |
+          set -o pipefail
           terraform apply \
             -var-file="terraform.tfvars" \
             -auto-approve \
