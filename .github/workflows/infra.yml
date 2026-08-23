@@ -100,6 +100,8 @@ jobs:
   # ─────────────────────────────────────────────────────────────
   validate:
     name: "Validate & Security Scan"
+    needs: detect-changes
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -129,18 +131,21 @@ jobs:
             })
 
       - name: Validate dev
+        if: needs.detect-changes.outputs.dev == 'true'
         run: |
           cd infrastructure/envs/dev
           terraform init -backend=false
           terraform validate
 
       - name: Validate staging
+        if: needs.detect-changes.outputs.staging == 'true'
         run: |
           cd infrastructure/envs/staging
           terraform init -backend=false
           terraform validate
 
       - name: Validate prod
+        if: needs.detect-changes.outputs.prod == 'true'
         run: |
           cd infrastructure/envs/prod
           terraform init -backend=false
