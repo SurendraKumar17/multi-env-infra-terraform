@@ -107,7 +107,7 @@ resource "helm_release" "kong" {
   atomic          = true
   cleanup_on_fail = true
   wait            = true
-  timeout         = 300
+  timeout         = 600
 
   values = [<<-YAML
     env:

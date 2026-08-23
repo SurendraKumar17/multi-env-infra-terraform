@@ -1,24 +1,33 @@
-# ─────────────────────────────────────
+locals {
+  tags = {
+    Environment = var.env
+    Project     = var.project
+    ManagedBy   = "terraform"
+    Cluster     = var.cluster_name
+  }
+}
+
+# ─────────────────────────────────────────
 # DATA
-# ─────────────────────────────────────
+# ─────────────────────────────────────────
 data "aws_caller_identity" "current" {}
 
-# ─────────────────────────
+# ─────────────────────────────────────────
 # VPC
-# ─────────────────────────
+# ────────────────────────────────────────
 module "vpc" {
   source       = "../../modules/vpc"
   region       = var.region
-  cidr         = "10.2.0.0/16" # distinct from dev (10.0.0.0/16) and staging (10.1.0.0/16)
+  cidr         = "10.2.0.0/16"
   azs          = ["us-east-1a", "us-east-1b"]
   env          = var.env
   project      = var.project
   cluster_name = var.cluster_name
 }
 
-# ──────────────────────────────────────
+# ─────────────────────────────────────────
 # EKS
-# ──────────────────────────────────────
+# ─────────────────────────────────────────
 module "eks" {
   source       = "../../modules/eks"
   depends_on   = [module.vpc]
@@ -30,20 +39,11 @@ module "eks" {
   region       = var.region
   max_size     = var.max_size
   desired_size = var.desired_size
+  min_size     = var.min_size
 }
 
 # ─────────────────────────────────────────
-# RDS — Postgres + Secrets Manager (prod only)
-#
-# The duplicate "rds_staging" module call that previously existed
-# in this file (creating an unrelated, unused "staging"-tagged RDS
-# instance inside prod's own VPC and prod's state file) has been
-# removed. Real staging RDS lives only in envs/staging/main.tf.
-#
-# TODO before first real prod apply: confirm modules/rds supports
-# deletion_protection / a lifecycle "prevent_destroy" — prod's
-# database should not be destroyable via a routine `terraform
-# destroy` run the way dev/staging currently are.
+# RDS
 # ─────────────────────────────────────────
 module "rds" {
   source     = "../../modules/rds"
@@ -73,14 +73,6 @@ module "iam" {
 
 # ─────────────────────────────────────────
 # EKS Access Entry for GitHub Actions
-#
-# SCOPE WARNING (kept from dev/staging unresolved): this still grants
-# AmazonEKSClusterAdminPolicy — full cluster admin — to the CI role,
-# in PROD. This is the one item most worth tightening before this
-# file goes live for real. Recommended fix: replace with a
-# namespace-scoped access policy (access_scope { type = "namespace",
-# namespaces = ["booking-prod"] }) and a custom policy limited to
-# deploy-relevant verbs, rather than full admin.
 # ─────────────────────────────────────────
 resource "aws_eks_access_entry" "github_actions" {
   cluster_name  = module.eks.cluster_name
@@ -101,7 +93,7 @@ resource "aws_eks_access_policy_association" "github_actions" {
 }
 
 # ─────────────────────────────────────────
-# HELM — cluster addons + ArgoCD
+# HELM
 # ─────────────────────────────────────────
 module "helm" {
   source     = "../../modules/helm"
@@ -114,6 +106,7 @@ module "helm" {
   ebs_csi_role_arn            = module.iam.ebs_csi_role_arn
   cluster_autoscaler_role_arn = module.iam.cluster_autoscaler_role_arn
   external_secrets_role_arn   = module.iam.external_secrets_role_arn
+  env                         = var.env
 
   alb_controller_replica_count = 1
   argocd_server_replicas       = 1
@@ -130,31 +123,74 @@ module "observability_s3" {
 }
 
 # ─────────────────────────────────────────
-# CLEANUP — delete ingresses before destroy
-#
-# Scoped to booking-prod only now (previously this block in the old
-# shared-pattern file deleted both booking-dev AND booking-prod
-# ingresses regardless of which env's destroy triggered it).
+# S3 — general application bucket
 # ─────────────────────────────────────────
-resource "null_resource" "cleanup_alb" {
-  triggers = {
-    cluster_name = module.eks.cluster_name
-    region       = var.region
+resource "aws_s3_bucket" "app" {
+  bucket = "${var.project}-${var.env}-app-storage"
+
+  tags = local.tags
+}
+
+resource "aws_s3_bucket_versioning" "app" {
+  bucket = aws_s3_bucket.app.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "app" {
+  bucket = aws_s3_bucket.app.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "app" {
+  bucket = aws_s3_bucket.app.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# ─────────────────────────────────────────
+# ECR — container image repository
+# ─────────────────────────────────────────
+resource "aws_ecr_repository" "app" {
+  name                 = "${var.project}-${var.env}"
+  image_tag_mutability = "IMMUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
   }
 
-  provisioner "local-exec" {
-    when    = destroy
-    command = <<-EOT
-      aws eks update-kubeconfig --region ${self.triggers.region} --name ${self.triggers.cluster_name}
-      kubectl delete ingress argocd-ingress -n argocd --ignore-not-found
-      kubectl delete ingress -n booking-prod --ignore-not-found --all
-      echo "Waiting for ALBs to be deleted..."
-      sleep 60
-    EOT
-    interpreter = ["bash", "-c"]
-  }
+  tags = local.tags
+}
 
-  depends_on = [module.helm]
+resource "aws_ecr_lifecycle_policy" "app" {
+  repository = aws_ecr_repository.app.name
+
+  policy = jsonencode({
+    rules = [
+      {
+        rulePriority = 1
+        description  = "Keep last 20 images"
+        selection = {
+          tagStatus   = "any"
+          countType   = "imageCountMoreThan"
+          countNumber = 20
+        }
+        action = {
+          type = "expire"
+        }
+      }
+    ]
+  })
 }
 
 # ─────────────────────────────────────────
@@ -167,4 +203,10 @@ output "vpc_id"                  { value = module.vpc.vpc_id }
 output "alb_controller_role_arn" { value = module.iam.alb_controller_role_arn }
 output "argocd_role_arn"         { value = module.iam.argocd_role_arn }
 output "observability_role_arn"  { value = module.iam.observability_role_arn }
-output "rds_endpoint"            { value =
+output "rds_endpoint"            { value = module.rds.db_host }
+output "rds_secret_arn"          { value = module.rds.secret_arn }
+
+output "argocd_url" {
+  description = "ArgoCD ALB URL — available ~2 mins after apply"
+  value       = "http://${module.helm.argocd_hostname}"
+}
