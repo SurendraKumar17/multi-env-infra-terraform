@@ -59,6 +59,7 @@ jobs:
       dev: ${{ steps.filter.outputs.dev }}
       staging: ${{ steps.filter.outputs.staging }}
       prod: ${{ steps.filter.outputs.prod }}
+      envs: ${{ steps.matrix.outputs.envs }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -79,6 +80,18 @@ jobs:
             prod:
               - *shared
               - 'infrastructure/envs/prod/**'
+
+      - name: Build changed-envs matrix
+        id: matrix
+        run: |
+          ENVS=()
+          [ "${{ steps.filter.outputs.dev }}" = "true" ] && ENVS+=("dev")
+          [ "${{ steps.filter.outputs.staging }}" = "true" ] && ENVS+=("staging")
+          [ "${{ steps.filter.outputs.prod }}" = "true" ] && ENVS+=("prod")
+          JSON=$(printf '"%s",' "${ENVS[@]}")
+          JSON="[${JSON%,}]"
+          echo "envs=$JSON" >> "$GITHUB_OUTPUT"
+          echo "Changed envs: $JSON"
 
   # ─────────────────────────────────────────────────────────────
   # JOB 1 — Validate & Security Scan (runs on every PR/push)
@@ -145,19 +158,12 @@ jobs:
   plan:
     name: "Plan [${{ matrix.environment }}]"
     needs: [validate, detect-changes]
-    if: |
-      github.event_name == 'pull_request' &&
-      (
-        (matrix.environment == 'dev' && needs.detect-changes.outputs.dev == 'true') ||
-        (matrix.environment == 'staging' && needs.detect-changes.outputs.staging == 'true') ||
-        (matrix.environment == 'prod' && needs.detect-changes.outputs.prod == 'true')
-      )
+    if: github.event_name == 'pull_request' && needs.detect-changes.outputs.envs != '[]'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        environment: [dev, staging, prod]
-    environment: ${{ matrix.environment }}
+        environment: ${{ fromJSON(needs.detect-changes.outputs.envs) }}
 
     steps:
       - name: Checkout
