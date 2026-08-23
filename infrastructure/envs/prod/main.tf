@@ -193,9 +193,9 @@ resource "aws_ecr_lifecycle_policy" "app" {
   })
 }
 
-# ─────────────────────────────────────────---
+# ─────────────────────────────────────────------
 # OUTPUTS
-# ─────────────────────────────────────────---
+# ─────────────────────────────────────────------
 output "cluster_name"            { value = module.eks.cluster_name }
 output "cluster_endpoint"        { value = module.eks.cluster_endpoint }
 output "region"                  { value = var.region }
