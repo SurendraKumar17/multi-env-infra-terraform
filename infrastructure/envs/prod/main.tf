@@ -23,6 +23,7 @@ module "vpc" {
   env          = var.env
   project      = var.project
   cluster_name = var.cluster_name
+  single_nat_gateway = true 
 }
 
 # ─────────────────────────────────────────
@@ -40,6 +41,7 @@ module "eks" {
   max_size     = var.max_size
   desired_size = var.desired_size
   min_size     = var.min_size
+  capacity_type = "SPOT" 
 }
 
 # ─────────────────────────────────────────
@@ -116,11 +118,11 @@ module "helm" {
 # ─────────────────────────────────────────
 # S3 — Observability backends
 # ─────────────────────────────────────────
-module "observability_s3" {
-  source       = "../../modules/observability-s3"
-  cluster_name = var.cluster_name
-  env          = var.env
-}
+# module "observability_s3" {
+#  source       = "../../modules/observability-s3"
+#  cluster_name = var.cluster_name
+#   env          = var.env
+# }
 
 # ─────────────────────────────────────────
 # S3 — general application bucket

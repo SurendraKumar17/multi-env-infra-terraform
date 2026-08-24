@@ -133,6 +133,7 @@ resource "aws_eks_node_group" "main" {
   node_role_arn   = aws_iam_role.nodes.arn
   subnet_ids      = var.subnet_ids
   instance_types  = var.instance_types
+  capacity_type   = var.capacity_type 
 
   launch_template {
     name    = aws_launch_template.nodes.name

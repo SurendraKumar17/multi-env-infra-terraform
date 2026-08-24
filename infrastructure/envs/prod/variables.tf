@@ -37,3 +37,9 @@ variable "min_size" {
   description = "Min number of nodes"
   default     = 2
 }
+
+variable "capacity_type" {
+  description = "EKS node group capacity type: ON_DEMAND or SPOT"
+  type        = string
+  default     = "ON_DEMAND"
+}
