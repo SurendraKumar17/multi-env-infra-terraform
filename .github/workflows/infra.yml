@@ -160,12 +160,17 @@ jobs:
           output_format: github_failed_only
 
   # ─────────────────────────────────────────────────────────────
-  # JOB 2 — Terraform Plan (all changed envs, on PRs)
+  # JOB 2 — Terraform Plan (all changed envs, on PRs AND on push
+  # to main). Running this on push too means every apply — including
+  # direct pushes to main — has a reviewable plan produced first,
+  # instead of relying only on a PR having existed beforehand.
   # ─────────────────────────────────────────────────────────────
   plan:
     name: "Plan [${{ matrix.environment }}]"
     needs: [validate, detect-changes]
-    if: github.event_name == 'pull_request' && needs.detect-changes.outputs.envs != '[]'
+    if: |
+      (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) &&
+      needs.detect-changes.outputs.envs != '[]'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -212,6 +217,7 @@ jobs:
           retention-days: 5
 
       - name: Post plan to PR
+        if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
@@ -263,19 +269,36 @@ jobs:
               });
             }
 
+      - name: Write plan summary (push runs)
+        if: github.event_name == 'push'
+        run: |
+          {
+            echo "### Terraform Plan — \`${{ matrix.environment }}\`"
+            echo ""
+            echo '```hcl'
+            cat infrastructure/envs/${{ matrix.environment }}/plan-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Fail if plan errored
         if: steps.plan.outputs.exitcode == '1'
         run: exit 1
 
   # ─────────────────────────────────────────────────────────────
   # JOB 3 — Apply DEV (only if dev changed, on merge to main)
-  # Pauses for manual approval if the "dev" GitHub Environment
-  # has required reviewers configured in repo Settings.
+  # Waits on `plan` so a reviewable plan always exists first, and
+  # pauses for manual approval if the "dev" GitHub Environment has
+  # required reviewers configured in repo Settings.
   # ─────────────────────────────────────────────────────────────
   apply-dev:
     name: "Apply [dev]"
-    needs: [validate, detect-changes]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect-changes.outputs.dev == 'true'
+    needs: [validate, detect-changes, plan]
+    if: |
+      always() &&
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      needs.detect-changes.outputs.dev == 'true' &&
+      needs.validate.result == 'success' &&
+      needs.plan.result == 'success'
     runs-on: ubuntu-latest
     environment: dev
 
@@ -298,13 +321,19 @@ jobs:
         working-directory: infrastructure/envs/dev
         run: terraform init
 
-      - name: Terraform Apply
+      - name: Download reviewed plan
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-dev-${{ github.sha }}
+          path: infrastructure/envs/dev
+
+      - name: Terraform Apply (reviewed plan)
         working-directory: infrastructure/envs/dev
         run: |
           set -o pipefail
           terraform apply \
-            -var-file="terraform.tfvars" \
             -auto-approve \
+            tfplan-dev \
             2>&1 | tee apply-output.txt
 
       - name: Notify Slack on failure
@@ -320,13 +349,19 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────
   # JOB 4 — Apply STAGING (only if staging changed, on merge to main)
-  # Pauses for manual approval if the "staging" Environment has
+  # Waits on `plan` so a reviewable plan always exists first, and
+  # pauses for manual approval if the "staging" Environment has
   # required reviewers configured in repo Settings.
   # ─────────────────────────────────────────────────────────────
   apply-staging:
     name: "Apply [staging]"
-    needs: [validate, detect-changes]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.detect-changes.outputs.staging == 'true'
+    needs: [validate, detect-changes, plan]
+    if: |
+      always() &&
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      needs.detect-changes.outputs.staging == 'true' &&
+      needs.validate.result == 'success' &&
+      needs.plan.result == 'success'
     runs-on: ubuntu-latest
     environment: staging
 
@@ -349,13 +384,19 @@ jobs:
         working-directory: infrastructure/envs/staging
         run: terraform init
 
-      - name: Terraform Apply
+      - name: Download reviewed plan
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-staging-${{ github.sha }}
+          path: infrastructure/envs/staging
+
+      - name: Terraform Apply (reviewed plan)
         working-directory: infrastructure/envs/staging
         run: |
           set -o pipefail
           terraform apply \
-            -var-file="terraform.tfvars" \
             -auto-approve \
+            tfplan-staging \
             2>&1 | tee apply-output.txt
 
       - name: Notify Slack on failure
@@ -371,19 +412,21 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────
   # JOB 5 — Apply PROD (only if prod changed, on merge to main)
-  # Pauses for manual approval if the "prod" Environment has
+  # Waits on `plan` so a reviewable plan always exists first, and
+  # pauses for manual approval if the "prod" Environment has
   # required reviewers configured in repo Settings. Runs after
   # staging succeeds, so promotion order is preserved when both
   # changed in the same merge.
   # ─────────────────────────────────────────────────────────────
   apply-prod:
     name: "Apply [prod]"
-    needs: [validate, detect-changes, apply-staging]
+    needs: [validate, detect-changes, plan, apply-staging]
     if: |
       always() &&
       github.event_name == 'push' && github.ref == 'refs/heads/main' &&
       needs.detect-changes.outputs.prod == 'true' &&
       needs.validate.result == 'success' &&
+      needs.plan.result == 'success' &&
       (needs.apply-staging.result == 'success' || needs.apply-staging.result == 'skipped')
     runs-on: ubuntu-latest
     environment: prod
@@ -407,13 +450,19 @@ jobs:
         working-directory: infrastructure/envs/prod
         run: terraform init
 
-      - name: Terraform Apply
+      - name: Download reviewed plan
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-prod-${{ github.sha }}
+          path: infrastructure/envs/prod
+
+      - name: Terraform Apply (reviewed plan)
         working-directory: infrastructure/envs/prod
         run: |
           set -o pipefail
           terraform apply \
-            -var-file="terraform.tfvars" \
             -auto-approve \
+            tfplan-prod \
             2>&1 | tee apply-output.txt
 
       - name: Notify Slack on failure
