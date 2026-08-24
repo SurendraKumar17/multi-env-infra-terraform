@@ -94,9 +94,9 @@ resource "aws_eks_access_policy_association" "github_actions" {
   }
 }
 
-# ─────────────────────────────────────────
+# ─────────────────────────────────────────----
 # HELM
-# ─────────────────────────────────────────
+# ─────────────────────────────────────────----
 module "helm" {
   source     = "../../modules/helm"
   depends_on = [module.eks, module.iam]
