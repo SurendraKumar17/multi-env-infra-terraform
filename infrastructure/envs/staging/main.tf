@@ -96,20 +96,21 @@ resource "aws_eks_access_policy_association" "github_actions" {
 # HELM — cluster addons + ArgoCD
 # ─────────────────────────────────────────
 module "helm" {
-  source     = "../../modules/helm"
-  depends_on = [module.eks, module.iam]
+source     = "../../modules/helm"
+depends_on = [module.eks, module.iam]
 
-  cluster_name                = module.eks.cluster_name
-  region                      = var.region
-  vpc_id                      = module.vpc.vpc_id
-  alb_controller_role_arn     = module.iam.alb_controller_role_arn
-  ebs_csi_role_arn            = module.iam.ebs_csi_role_arn
-  cluster_autoscaler_role_arn = module.iam.cluster_autoscaler_role_arn
-  external_secrets_role_arn   = module.iam.external_secrets_role_arn
+cluster_name                = module.eks.cluster_name
+region                      = var.region
+vpc_id                      = module.vpc.vpc_id
+alb_controller_role_arn     = module.iam.alb_controller_role_arn
+ebs_csi_role_arn            = module.iam.ebs_csi_role_arn
+cluster_autoscaler_role_arn = module.iam.cluster_autoscaler_role_arn
+external_secrets_role_arn   = module.iam.external_secrets_role_arn
+env = var.env
 
-  alb_controller_replica_count = 1
-  argocd_server_replicas       = 1
-  argocd_repo_server_replicas  = 1
+alb_controller_replica_count = 1
+argocd_server_replicas       = 1
+argocd_repo_server_replicas  = 1
 }
 
 # ─────────────────────────────────────────
