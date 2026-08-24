@@ -73,12 +73,12 @@ jobs:
           filters: |
             shared: &shared
               - 'infrastructure/modules/**'
-            dev:
-              - *shared
-              - 'infrastructure/envs/dev/**'
-            staging:
-              - *shared
-              - 'infrastructure/envs/staging/**'
+            # dev:
+            #   - *shared
+            #   - 'infrastructure/envs/dev/**'
+            # staging:
+            #   - *shared
+            #   - 'infrastructure/envs/staging/**'
             prod:
               - *shared
               - 'infrastructure/envs/prod/**'
