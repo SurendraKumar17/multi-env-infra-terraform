@@ -336,6 +336,7 @@ resource "aws_iam_role" "github_actions_ecr" {
           "token.actions.githubusercontent.com:sub" = [
             "repo:SurendraKumar17/multi-env-infra-terraform:ref:refs/heads/main",
             "repo:SurendraKumar17/multi-env-infra-terraform:pull_request"
+          ]
         }
       }
     }]
