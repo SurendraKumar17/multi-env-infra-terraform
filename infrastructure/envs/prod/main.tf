@@ -5,6 +5,17 @@ locals {
     ManagedBy   = "terraform"
     Cluster     = var.cluster_name
   }
+
+  # One ECR repo per microservice. Names must match exactly what the
+  # Helm chart references as {{ .Values.global.registry }}/<repo-name>:<tag>
+  ecr_repositories = [
+    "frontend",
+    "auth-service",
+    "booking-service",
+    "search-service",
+    "payment-service",
+    "notification-service",
+  ]
 }
 
 # ─────────────────────────────────────────
@@ -26,9 +37,9 @@ module "vpc" {
   single_nat_gateway = true
 }
 
-# ─────────────────────────────────────────
+# ────────────────────────────────────────
 # EKS
-# ─────────────────────────────────────────
+# ────────────────────────────────────────
 module "eks" {
   source        = "../../modules/eks"
   depends_on    = [module.vpc]
@@ -58,9 +69,9 @@ module "rds" {
   subnet_ids = module.vpc.private_subnets
 }
 
-# ─────────────────────────────────────────
+# ─────────────────────────────────────────---
 # IAM
-# ─────────────────────────────────────────
+# ─────────────────────────────────────────---
 module "iam" {
   source            = "../../modules/iam"
   depends_on        = [module.eks]
@@ -160,22 +171,28 @@ resource "aws_s3_bucket_public_access_block" "app" {
   restrict_public_buckets = true
 }
 
-# ─────────────────────────────────────────
-# ECR — container image repository
-# ─────────────────────────────────────────
-resource "aws_ecr_repository" "app" {
-  name                 = "${var.project}-${var.env}"
+# ───────────────────────────────────────
+# ECR — one repository per microservice
+# ───────────────────────────────────────
+resource "aws_ecr_repository" "services" {
+  for_each = toset(local.ecr_repositories)
+
+  name                 = each.value
   image_tag_mutability = "IMMUTABLE"
 
   image_scanning_configuration {
     scan_on_push = true
   }
 
-  tags = local.tags
+  tags = merge(local.tags, {
+    Service = each.value
+  })
 }
 
-resource "aws_ecr_lifecycle_policy" "app" {
-  repository = aws_ecr_repository.app.name
+resource "aws_ecr_lifecycle_policy" "services" {
+  for_each = aws_ecr_repository.services
+
+  repository = each.value.name
 
   policy = jsonencode({
     rules = [
@@ -208,6 +225,11 @@ output "observability_role_arn"    { value = module.iam.observability_role_arn }
 output "github_actions_ecr_role_arn" { value = module.iam.github_actions_ecr_role_arn }
 output "rds_endpoint"              { value = module.rds.db_host }
 output "rds_secret_arn"            { value = module.rds.secret_arn }
+
+output "ecr_repository_urls" {
+  description = "Map of service name -> full ECR repository URL"
+  value       = { for name, repo in aws_ecr_repository.services : name => repo.repository_url }
+}
 
 output "argocd_url" {
   description = "ArgoCD ALB URL — available ~2 mins after apply"
