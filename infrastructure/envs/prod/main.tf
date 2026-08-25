@@ -16,32 +16,32 @@ data "aws_caller_identity" "current" {}
 # VPC
 # ────────────────────────────────────────
 module "vpc" {
-  source       = "../../modules/vpc"
-  region       = var.region
-  cidr         = "10.2.0.0/16"
-  azs          = ["us-east-1a", "us-east-1b"]
-  env          = var.env
-  project      = var.project
-  cluster_name = var.cluster_name
-  single_nat_gateway = true 
+  source             = "../../modules/vpc"
+  region             = var.region
+  cidr               = "10.2.0.0/16"
+  azs                = ["us-east-1a", "us-east-1b"]
+  env                = var.env
+  project            = var.project
+  cluster_name       = var.cluster_name
+  single_nat_gateway = true
 }
 
 # ─────────────────────────────────────────
 # EKS
 # ─────────────────────────────────────────
 module "eks" {
-  source       = "../../modules/eks"
-  depends_on   = [module.vpc]
-  env          = var.env
-  project      = var.project
-  cluster_name = var.cluster_name
-  vpc_id       = module.vpc.vpc_id
-  subnet_ids   = module.vpc.private_subnets
-  region       = var.region
-  max_size     = var.max_size
-  desired_size = var.desired_size
-  min_size     = var.min_size
-  capacity_type = "ON_DEMAND" 
+  source        = "../../modules/eks"
+  depends_on    = [module.vpc]
+  env           = var.env
+  project       = var.project
+  cluster_name  = var.cluster_name
+  vpc_id        = module.vpc.vpc_id
+  subnet_ids    = module.vpc.private_subnets
+  region        = var.region
+  max_size      = var.max_size
+  desired_size  = var.desired_size
+  min_size      = var.min_size
+  capacity_type = "ON_DEMAND"
 }
 
 # ─────────────────────────────────────────---
@@ -78,16 +78,16 @@ module "iam" {
 # ─────────────────────────────────────────
 resource "aws_eks_access_entry" "github_actions" {
   cluster_name  = module.eks.cluster_name
-  principal_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/github-actions-ecr-role"
+  principal_arn = module.iam.github_actions_ecr_role_arn
   type          = "STANDARD"
-  depends_on    = [module.eks]
+  depends_on    = [module.eks, module.iam]
 }
 
 resource "aws_eks_access_policy_association" "github_actions" {
   cluster_name  = module.eks.cluster_name
-  principal_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/github-actions-ecr-role"
+  principal_arn = module.iam.github_actions_ecr_role_arn
   policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
-  depends_on    = [module.eks]
+  depends_on    = [module.eks, module.iam]
 
   access_scope {
     type = "cluster"
@@ -198,15 +198,16 @@ resource "aws_ecr_lifecycle_policy" "app" {
 # ─────────────────────────────────────────---------
 # OUTPUTS
 # ─────────────────────────────────────────---------
-output "cluster_name"            { value = module.eks.cluster_name }
-output "cluster_endpoint"        { value = module.eks.cluster_endpoint }
-output "region"                  { value = var.region }
-output "vpc_id"                  { value = module.vpc.vpc_id }
-output "alb_controller_role_arn" { value = module.iam.alb_controller_role_arn }
-output "argocd_role_arn"         { value = module.iam.argocd_role_arn }
-output "observability_role_arn"  { value = module.iam.observability_role_arn }
-output "rds_endpoint"            { value = module.rds.db_host }
-output "rds_secret_arn"          { value = module.rds.secret_arn }
+output "cluster_name"              { value = module.eks.cluster_name }
+output "cluster_endpoint"          { value = module.eks.cluster_endpoint }
+output "region"                    { value = var.region }
+output "vpc_id"                    { value = module.vpc.vpc_id }
+output "alb_controller_role_arn"   { value = module.iam.alb_controller_role_arn }
+output "argocd_role_arn"           { value = module.iam.argocd_role_arn }
+output "observability_role_arn"    { value = module.iam.observability_role_arn }
+output "github_actions_ecr_role_arn" { value = module.iam.github_actions_ecr_role_arn }
+output "rds_endpoint"              { value = module.rds.db_host }
+output "rds_secret_arn"            { value = module.rds.secret_arn }
 
 output "argocd_url" {
   description = "ArgoCD ALB URL — available ~2 mins after apply"

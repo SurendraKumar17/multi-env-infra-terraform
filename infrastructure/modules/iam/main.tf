@@ -305,3 +305,60 @@ resource "aws_iam_role_policy" "observability_s3" {
     ]
   })
 }
+
+# ────────────────────────────────────────────────
+# GitHub Actions OIDC Provider (one per AWS account)
+# ────────────────────────────────────────────────
+# NOTE: If a GitHub Actions OIDC provider already exists in this AWS
+# account (e.g. created by another Terraform config or manually), remove
+# this resource and instead pass its ARN in via a variable / data source
+# to avoid a "provider already exists" error on apply.
+data "tls_certificate" "github_actions" {
+  url = "https://token.actions.githubusercontent.com"
+}
+
+resource "aws_iam_openid_connect_provider" "github_actions" {
+  url             = "https://token.actions.githubusercontent.com"
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = [data.tls_certificate.github_actions.certificates[0].sha1_fingerprint]
+  tags            = local.tags
+}
+
+# ────────────────────────────────────────────────
+# IAM Role — GitHub Actions (ECR push + EKS access)
+# ────────────────────────────────────────────────
+resource "aws_iam_role" "github_actions_ecr" {
+  name = "github-actions-ecr-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Federated = aws_iam_openid_connect_provider.github_actions.arn
+      }
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+        }
+        StringLike = {
+          # TODO: replace ORG/REPO with your actual GitHub org and repo.
+          # Narrow further to a specific branch if possible, e.g.:
+          # "token.actions.githubusercontent.com:sub" = "repo:ORG/REPO:ref:refs/heads/main"
+          "token.actions.githubusercontent.com:sub" = "repo:ORG/REPO:*"
+        }
+      }
+    }]
+  })
+  tags = local.tags
+}
+
+resource "aws_iam_role_policy_attachment" "github_actions_ecr" {
+  role       = aws_iam_role.github_actions_ecr.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser"
+}
+
+output "github_actions_ecr_role_arn" {
+  value = aws_iam_role.github_actions_ecr.arn
+}
