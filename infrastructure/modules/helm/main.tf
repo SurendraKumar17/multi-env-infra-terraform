@@ -23,6 +23,12 @@ resource "kubernetes_namespace" "argo_rollouts" {
   }
 }
 
+resource "kubernetes_namespace" "app" {
+  metadata {
+    name = "app-${var.env}"
+  }
+}
+
 # resource "kubernetes_namespace" "monitoring" {
 #   metadata {
 #     name = "monitoring"
@@ -551,11 +557,12 @@ resource "random_password" "mongodb_user" {
 # ─────────────────────────────────────────
 # MongoDB
 # ─────────────────────────────────────────
+
 resource "helm_release" "mongodb" {
   name       = "mongodb"
   repository = "oci://registry-1.docker.io/bitnamicharts"
   chart      = "mongodb"
-  namespace  = "app-dev"
+  namespace  = kubernetes_namespace.app.metadata[0].name
   version    = "19.1.15"
 
   atomic          = true
@@ -607,6 +614,7 @@ resource "helm_release" "mongodb" {
   depends_on = [
     helm_release.argocd,
     kubernetes_storage_class.gp3_default,
+    kubernetes_namespace.app,
   ]
 }
 
@@ -621,7 +629,7 @@ resource "aws_secretsmanager_secret" "mongodb" {
 resource "aws_secretsmanager_secret_version" "mongodb" {
   secret_id = aws_secretsmanager_secret.mongodb.id
   secret_string = jsonencode({
-    MONGO_URI = "mongodb://notificationuser:${random_password.mongodb_user.result}@mongodb.app-dev.svc.cluster.local:27017/notification_db"
+    MONGO_URI = "mongodb://notificationuser:${random_password.mongodb_user.result}@mongodb.app-${var.env}.svc.cluster.local:27017/notification_db"
     DB_NAME   = "notification_db"
   })
 
