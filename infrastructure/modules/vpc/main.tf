@@ -131,3 +131,45 @@ resource "aws_flow_log" "vpc" {
   iam_role_arn         = aws_iam_role.flow_logs.arn
   tags                 = local.tags
 }
+
+
+# ─────────────────────────────────────────
+# ALB Security Group
+# The AWS Load Balancer Controller can auto-create its own
+# frontend SG for the ALB, but that one ended up with zero
+# inbound rules (root cause of the ALB being unreachable).
+# Owning this SG here makes the rule permanent and survives
+# any controller reconcile or Terraform re-apply.
+# ─────────────────────────────────────────
+resource "aws_security_group" "alb" {
+  name        = "${var.cluster_name}-alb-sg"
+  description = "Allow inbound HTTP/HTTPS to the shared ALB"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description = "HTTP from internet"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "HTTPS from internet"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.cluster_name}-alb-sg"
+  }
+}
