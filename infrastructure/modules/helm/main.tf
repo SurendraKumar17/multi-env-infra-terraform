@@ -275,6 +275,8 @@ resource "kubernetes_ingress_v1" "argocd" {
       "alb.ingress.kubernetes.io/scheme"           = "internet-facing"
       "alb.ingress.kubernetes.io/target-type"      = "ip"
       "alb.ingress.kubernetes.io/backend-protocol" = "HTTP"
+      "alb.ingress.kubernetes.io/group.name"       = "shared-alb"
+      "alb.ingress.kubernetes.io/security-groups"  = var.alb_security_group_id
     }
   }
 

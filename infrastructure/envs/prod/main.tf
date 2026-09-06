@@ -115,6 +115,7 @@ module "helm" {
   cluster_name                = module.eks.cluster_name
   region                      = var.region
   vpc_id                      = module.vpc.vpc_id
+  alb_security_group_id       = module.vpc.alb_security_group_id
   alb_controller_role_arn     = module.iam.alb_controller_role_arn
   ebs_csi_role_arn            = module.iam.ebs_csi_role_arn
   cluster_autoscaler_role_arn = module.iam.cluster_autoscaler_role_arn
