@@ -14,3 +14,8 @@ variable "capacity_type" {
   type        = string
   default     = "ON_DEMAND"
 }
+
+variable "alb_security_group_id" {
+  description = "ALB security group ID, from modules/vpc, allowed to reach node/pod ports"
+  type        = string
+}

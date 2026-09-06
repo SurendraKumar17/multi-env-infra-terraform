@@ -53,6 +53,7 @@ module "eks" {
   desired_size  = var.desired_size
   min_size      = var.min_size
   capacity_type = "ON_DEMAND"
+  alb_security_group_id = module.vpc.alb_security_group_id   
 }
 
 # ─────────────────────────────────────────---
