@@ -93,68 +93,6 @@ resource "helm_release" "ebs_csi_driver" {
   }
 }
 
-
-# ─────────────────────────────────────────
-# Kong API Gateway
-# Ingress Controller for EKS-internal
-# microservice routing. DB-less mode —
-# config driven by K8s CRDs, no Postgres.
-# ─────────────────────────────────────────
-# resource "kubernetes_namespace" "kong" {
-#   metadata {
-#     name = "kong"
-#   }
-# }
-
-# resource "helm_release" "kong" {
-#   name       = "kong"
-#   repository = "https://charts.konghq.com"
-#   chart      = "kong"
-#   namespace  = kubernetes_namespace.kong.metadata[0].name
-#   version    = var.kong_version
-
-#   atomic          = true
-#   cleanup_on_fail = true
-#   wait            = true
-#   timeout         = 600
-
-#   values = [<<-YAML
-#     env:
-#       database: "off"
-
-#     ingressController:
-#       enabled: true
-#       installCRDs: false
-
-#     admin:
-#       enabled: false
-
-#     proxy:
-#       type: LoadBalancer
-#       annotations:
-#         service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
-#         service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
-#         service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
-
-#     replicaCount: ${var.kong_replica_count}
-
-#     resources:
-#       requests:
-#         cpu: 250m
-#         memory: 256Mi
-#       limits:
-#         cpu: 500m
-#         memory: 512Mi
-#   YAML
-#   ]
-
-#   depends_on = [
-#     helm_release.aws_load_balancer_controller,
-#     kubernetes_namespace.kong,
-#   ]
-# }
-
-
 # ─────────────────────────────────────────
 # Default StorageClass — gp3 via EBS CSI
 # ─────────────────────────────────────────
@@ -256,11 +194,64 @@ resource "helm_release" "argocd" {
     name  = "repoServer.replicas"
     value = var.argocd_repo_server_replicas
   }
+  set {
+    name  = "configs.cm.accounts\\.admin"
+    value = "apiKey"
+  }
 
   depends_on = [
     helm_release.aws_load_balancer_controller,
     kubernetes_namespace.argocd,
   ]
+}
+
+# ─────────────────────────────────────────
+# ArgoCD Bootstrap — root "app of apps"
+# Automatically discovers and creates every
+# Application manifest under
+# argocd/applications/ in the GitOps repo.
+# Replaces manual `kubectl apply -f
+# argocd/applications/*.yaml` after every
+# fresh cluster/ArgoCD install.
+# ─────────────────────────────────────────
+resource "kubernetes_manifest" "argocd_bootstrap" {
+  manifest = {
+    apiVersion = "argoproj.io/v1alpha1"
+    kind       = "Application"
+    metadata = {
+      name      = "bootstrap"
+      namespace = kubernetes_namespace.argocd.metadata[0].name
+      finalizers = [
+        "resources-finalizer.argocd.argoproj.io"
+      ]
+    }
+    spec = {
+      project = "default"
+      source = {
+        repoURL        = "https://github.com/SurendraKumar17/gitops-k8s-platform"
+        targetRevision = "main"
+        path           = "argocd/applications"
+        directory = {
+          recurse = true
+        }
+      }
+      destination = {
+        server    = "https://kubernetes.default.svc"
+        namespace = kubernetes_namespace.argocd.metadata[0].name
+      }
+      syncPolicy = {
+        automated = {
+          prune    = true
+          selfHeal = true
+        }
+        syncOptions = [
+          "CreateNamespace=true"
+        ]
+      }
+    }
+  }
+
+  depends_on = [helm_release.argocd]
 }
 
 # ─────────────────────────────────────────
@@ -351,197 +342,6 @@ resource "helm_release" "argo_rollouts" {
     kubernetes_namespace.argo_rollouts,
   ]
 }
-
-# ─────────────────────────────────────────
-# Prometheus
-# ─────────────────────────────────────────
-# resource "helm_release" "prometheus_stack" {
-#   name       = "prometheus-stack"
-#   repository = "https://prometheus-community.github.io/helm-charts"
-#   chart      = "kube-prometheus-stack"
-#   namespace  = kubernetes_namespace.monitoring.metadata[0].name
-#   version    = "58.7.2"
-
-#   atomic          = true
-#   cleanup_on_fail = true
-#   wait            = true
-#   timeout         = 600
-
-#   # Allow Prometheus to scrape ServiceMonitors from all namespaces
-#   # (not just the monitoring namespace) — required for app-dev services.
-#   values = [<<-YAML
-#     prometheus:
-#       prometheusSpec:
-#         serviceMonitorSelectorNilUsesHelmValues: false
-#         serviceMonitorSelector: {}
-#         serviceMonitorNamespaceSelector: {}
-#     grafana:
-#       additionalDataSources:
-#         - name: Loki
-#           type: loki
-#           url: http://loki-gateway.monitoring.svc.cluster.local:80
-#           access: proxy
-#           isDefault: false
-#         - name: Tempo
-#           type: tempo
-#           url: http://tempo.monitoring.svc.cluster.local:3100
-#           access: proxy
-#           isDefault: false
-#   YAML
-#   ]
-
-#   depends_on = [
-#     kubernetes_namespace.monitoring,
-#     kubernetes_storage_class.gp3_default,
-#   ]
-# }
-
-# # ─────────────────────────────────────────
-# # Loki — log aggregation
-# # Configured in single-binary (monolithic)
-# # mode for simplicity on a dev cluster.
-# # Uses gp3 for persistent log storage.
-# # ─────────────────────────────────────────
-# resource "helm_release" "loki" {
-#   name       = "loki"
-#   repository = "https://grafana.github.io/helm-charts"
-#   chart      = "loki"
-#   namespace  = kubernetes_namespace.monitoring.metadata[0].name
-#   version    = "6.6.2"
-
-#   atomic          = true
-#   cleanup_on_fail = true
-#   wait            = true
-#   timeout         = 600
-
-#   values = [<<-YAML
-#     deploymentMode: SingleBinary
-#     loki:
-#       auth_enabled: false
-#       commonConfig:
-#         replication_factor: 1
-#       storage:
-#         type: filesystem
-#       schemaConfig:
-#         configs:
-#           - from: "2024-01-01"
-#             store: tsdb
-#             object_store: filesystem
-#             schema: v13
-#             index:
-#               prefix: loki_index_
-#               period: 24h
-#     singleBinary:
-#       replicas: 1
-#       persistence:
-#         enabled: true
-#         storageClass: gp3
-#         size: 10Gi
-#     gateway:
-#       enabled: true
-#     # Disable components not needed in single-binary mode
-#     read:
-#       replicas: 0
-#     write:
-#       replicas: 0
-#     backend:
-#       replicas: 0
-#   YAML
-#   ]
-
-#   depends_on = [
-#     kubernetes_namespace.monitoring,
-#     kubernetes_storage_class.gp3_default,
-#     helm_release.prometheus_stack,
-#   ]
-# }
-
-# # ─────────────────────────────────────────
-# # Promtail — ships pod logs to Loki
-# # Runs as a DaemonSet on every node,
-# # tails /var/log/pods/* and forwards to Loki.
-# # ─────────────────────────────────────────
-# resource "helm_release" "promtail" {
-#   name       = "promtail"
-#   repository = "https://grafana.github.io/helm-charts"
-#   chart      = "promtail"
-#   namespace  = kubernetes_namespace.monitoring.metadata[0].name
-#   version    = "6.16.4"
-
-#   atomic          = true
-#   cleanup_on_fail = true
-#   wait            = true
-#   timeout         = 300
-
-#   values = [<<-YAML
-#     config:
-#       clients:
-#         - url: http://loki-gateway.monitoring.svc.cluster.local:80/loki/api/v1/push
-#     # Add service/namespace labels to every log line for easy filtering
-#     extraScrapeConfigs: |
-#       - job_name: kubernetes-pods
-#         kubernetes_sd_configs:
-#           - role: pod
-#         relabel_configs:
-#           - source_labels: [__meta_kubernetes_namespace]
-#             target_label: namespace
-#           - source_labels: [__meta_kubernetes_pod_label_app]
-#             target_label: app
-#           - source_labels: [__meta_kubernetes_pod_name]
-#             target_label: pod
-#   YAML
-#   ]
-
-#   depends_on = [helm_release.loki]
-# }
-
-# # ─────────────────────────────────────────
-# # Tempo — distributed tracing backend
-# # Single-binary mode, filesystem storage.
-# # Services send traces via OTLP gRPC (4317)
-# # or HTTP (4318).
-# # ─────────────────────────────────────────
-# resource "helm_release" "tempo" {
-#   name       = "tempo"
-#   repository = "https://grafana.github.io/helm-charts"
-#   chart      = "tempo"
-#   namespace  = kubernetes_namespace.monitoring.metadata[0].name
-#   version    = "1.10.1"
-
-#   atomic          = true
-#   cleanup_on_fail = true
-#   wait            = true
-#   timeout         = 300
-
-#   values = [<<-YAML
-#     tempo:
-#       storage:
-#         trace:
-#           backend: local
-#           local:
-#             path: /var/tempo/traces
-#       receivers:
-#         otlp:
-#           protocols:
-#             grpc:
-#               endpoint: 0.0.0.0:4317
-#             http:
-#               endpoint: 0.0.0.0:4318
-#     persistence:
-#       enabled: true
-#       storageClassName: gp3
-#       size: 10Gi
-#     serviceMonitor:
-#       enabled: true
-#   YAML
-#   ]
-
-#   depends_on = [
-#     kubernetes_namespace.monitoring,
-#     kubernetes_storage_class.gp3_default,
-#     helm_release.prometheus_stack,
-#   ]
-# }
 
 # ─────────────────────────────────────────
 # Random passwords for MongoDB
